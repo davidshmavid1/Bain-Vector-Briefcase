@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # Ceiling applied to a server-supplied `Retry-After`, so a large or
     # hostile value cannot hold a brief request open indefinitely.
     gdelt_max_retry_delay: float = 30.0
+    # GDELT allows one request every five seconds per IP. The news service
+    # spaces its own outbound calls to honour this rather than relying on the
+    # retry to clean up a 429 we caused ourselves.
+    gdelt_min_interval_seconds: float = 5.0
+    # How long raw GDELT results stay reusable. Repeat or shared searches for
+    # the same company and window then cost no rate-limit slot at all.
+    gdelt_cache_seconds: float = 600.0
 
     # How many raw GDELT records to pull before ranking/deduplication
     # (250 is the API maximum).

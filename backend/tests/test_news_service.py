@@ -555,3 +555,148 @@ async def test_absurd_retry_after_is_clamped(settings, monkeypatch):
     await news_service.collect_sources("Acme Corp", 30, settings=settings)
 
     assert slept == [settings.gdelt_max_retry_delay]
+
+
+# --- rate gate and cache --------------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_outbound_calls_are_spaced_by_the_minimum_interval(settings, monkeypatch):
+    """The gate must prevent a 429, not just react to one."""
+    slept: List[float] = []
+    real_sleep = news_service.asyncio.sleep
+
+    async def record_sleep(seconds):
+        slept.append(seconds)
+        await real_sleep(0)
+
+    monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
+    spaced = settings.model_copy(update={"gdelt_min_interval_seconds": 5.0})
+    respx.get(settings.gdelt_base_url).mock(
+        return_value=httpx.Response(200, json={"articles": make_varied_articles(5)})
+    )
+
+    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+    news_service.clear_cache()  # force a second real fetch
+    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+
+    assert len(slept) == 1
+    assert 0 < slept[0] <= 5.0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_first_call_is_not_delayed(settings, monkeypatch):
+    slept: List[float] = []
+
+    async def record_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
+    spaced = settings.model_copy(update={"gdelt_min_interval_seconds": 5.0})
+    respx.get(settings.gdelt_base_url).mock(
+        return_value=httpx.Response(200, json={"articles": make_varied_articles(5)})
+    )
+
+    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+
+    assert slept == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_concurrent_searches_do_not_race_into_a_burst(settings, monkeypatch):
+    """Five simultaneous searches must serialise, not fire five parallel calls."""
+    in_flight = 0
+    max_in_flight = 0
+
+    async def tracking_get(client, s, params, timeout):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await news_service.asyncio.sleep(0)
+        in_flight -= 1
+        return json.dumps({"articles": make_varied_articles(5)})
+
+    monkeypatch.setattr(news_service, "_get_body", tracking_get)
+
+    await news_service.asyncio.gather(
+        *(news_service.collect_sources(f"Company {i}", 30, settings=settings) for i in range(5))
+    )
+
+    assert max_in_flight == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_repeat_search_is_served_from_cache(settings):
+    route = respx.get(settings.gdelt_base_url).mock(
+        return_value=httpx.Response(200, json={"articles": make_varied_articles(6)})
+    )
+
+    first = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    second = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    assert route.call_count == 1
+    assert [s.url for s in first] == [s.url for s in second]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_cache_key_ignores_case_and_padding(settings):
+    route = respx.get(settings.gdelt_base_url).mock(
+        return_value=httpx.Response(200, json={"articles": make_varied_articles(6)})
+    )
+
+    await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    await news_service.collect_sources("  acme   corp ", 30, settings=settings)
+
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_different_window_is_fetched_separately(settings):
+    route = respx.get(settings.gdelt_base_url).mock(
+        return_value=httpx.Response(200, json={"articles": make_varied_articles(6)})
+    )
+
+    await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    await news_service.collect_sources("Acme Corp", 7, settings=settings)
+
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_expired_cache_entry_is_refetched(settings):
+    brief_cache = settings.model_copy(update={"gdelt_cache_seconds": 0.0})
+    route = respx.get(settings.gdelt_base_url).mock(
+        return_value=httpx.Response(200, json={"articles": make_varied_articles(6)})
+    )
+
+    await news_service.collect_sources("Acme Corp", 30, settings=brief_cache)
+    await news_service.collect_sources("Acme Corp", 30, settings=brief_cache)
+
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_failed_fetch_is_not_cached(settings):
+    """A 429 must not poison the cache with an empty result."""
+    fast = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
+    respx.get(settings.gdelt_base_url).mock(
+        side_effect=[
+            httpx.Response(429, text="slow down"),
+            httpx.Response(429, text="slow down"),
+            httpx.Response(200, json={"articles": make_varied_articles(6)}),
+        ]
+    )
+
+    with pytest.raises(NewsUnavailableError):
+        await news_service.collect_sources("Acme Corp", 30, settings=fast)
+
+    sources = await news_service.collect_sources("Acme Corp", 30, settings=fast)
+    assert len(sources) == 6
