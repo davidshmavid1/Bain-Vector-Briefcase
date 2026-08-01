@@ -21,6 +21,19 @@ class NewsUnavailableError(BriefError):
     message = "The news service is temporarily unavailable. Please try again in a moment."
 
 
+class NewsConfigError(BriefError):
+    status_code = 503
+    message = "The news service is not configured. Set TAVILY_API_KEY on the server."
+
+
+class NewsQuotaExceededError(BriefError):
+    status_code = 503
+    message = (
+        "The monthly news search quota has been used up. "
+        "It resets at the start of the next billing cycle."
+    )
+
+
 class NoArticlesFoundError(BriefError):
     status_code = 404
     message = (
