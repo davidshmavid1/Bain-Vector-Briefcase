@@ -7,7 +7,7 @@
 # and adding a pyproject.toml can change how build tooling treats this
 # directory.
 
-target-version = "py39"
+target-version = "py314"
 line-length = 120
 
 [lint]
@@ -35,9 +35,11 @@ ignore = [
     "SIM905",
 ]
 
-# UP (pyupgrade) is intentionally absent. PEP 585 builtin generics would work
-# on 3.9, but rewriting every annotation is churn this project has not opted
-# into; revisit it as one deliberate change rather than a drip of editor hints.
+# UP (pyupgrade) is intentionally absent. The floor is now 3.14, so PEP 585
+# builtin generics and PEP 604 unions are available everywhere and the typing
+# imports the modules still use are pure legacy. Rewriting every annotation is
+# nonetheless churn this project has not opted into; do it as one deliberate
+# change rather than a drip of editor hints.
 
 [lint.per-file-ignores]
 # Fixture rows and the fake Gemini client read better as single long lines.

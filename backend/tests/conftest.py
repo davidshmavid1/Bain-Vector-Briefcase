@@ -7,6 +7,20 @@ from app.config import Settings
 from app.schemas import AnalysisDevelopment, AnalysisInsight, BriefAnalysis, Source
 
 
+@pytest.fixture(autouse=True)
+def isolate_news_service_state():
+    """The GDELT cache and rate gate are module-level, so reset them around
+    every test — otherwise one case's cached result satisfies the next case's
+    request and its call-count assertions silently pass."""
+    from app.services import news_service
+
+    news_service.clear_cache()
+    news_service.reset_rate_gate()
+    yield
+    news_service.clear_cache()
+    news_service.reset_rate_gate()
+
+
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
@@ -14,6 +28,9 @@ def settings() -> Settings:
         gemini_model="gemini-2.5-flash",
         allowed_origins="http://localhost:3000",
         demo_mode=False,
+        # Real spacing would add 5s to every test that touches GDELT. The gate's
+        # behaviour is covered explicitly in test_news_service.py instead.
+        gdelt_min_interval_seconds=0.0,
     )
 
 
