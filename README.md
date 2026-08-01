@@ -31,7 +31,7 @@ Next.js Route Handlers.
 ## Requirements
 
 - Node.js 20.9+
-- Python 3.9+
+- Python 3.14+
 - A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey) (free tier is enough)
 
 No database, queue, cache or other paid infrastructure is required.

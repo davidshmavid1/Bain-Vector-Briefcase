@@ -8,9 +8,10 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -236,6 +237,64 @@ async def _get_body(
     return response.text.strip()
 
 
+# GDELT allows one request every five seconds per IP. Retrying a 429 only
+# reacts to a violation we already committed; this gate prevents it. Every
+# outbound GDELT call — first attempts and retries alike — passes through here,
+# so concurrent searches queue instead of racing each other into a 429.
+_rate_gate: Optional[asyncio.Lock] = None
+_rate_gate_loop = None
+# None means "no call yet". Not 0.0: time.monotonic()'s zero point is arbitrary
+# and on some platforms sits near process start, which would make the very first
+# request on a fresh server wait out a full interval for nothing.
+_last_call_at: Optional[float] = None
+
+
+def _gate() -> asyncio.Lock:
+    """Return a lock bound to the *running* loop.
+
+    A module-level `asyncio.Lock()` binds to whichever loop exists at import
+    time, which on Python 3.9 is not the loop uvicorn later runs on — using it
+    raises "got Future attached to a different loop". Creating it lazily, and
+    recreating it if the loop changes, keeps it correct in both the server and
+    the test suite.
+    """
+    global _rate_gate, _rate_gate_loop
+    loop = asyncio.get_event_loop()
+    if _rate_gate is None or _rate_gate_loop is not loop:
+        _rate_gate = asyncio.Lock()
+        _rate_gate_loop = loop
+    return _rate_gate
+
+
+def reset_rate_gate() -> None:
+    """Forget the last call and drop the lock. For tests, so cases neither wait
+    on each other's timestamps nor inherit a lock from a closed loop."""
+    global _last_call_at, _rate_gate, _rate_gate_loop
+    _last_call_at = None
+    _rate_gate = None
+    _rate_gate_loop = None
+
+
+async def _spaced_get(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    params: dict,
+    timeout: httpx.Timeout,
+) -> str:
+    global _last_call_at
+    async with _gate():
+        if _last_call_at is not None:
+            wait = settings.gdelt_min_interval_seconds - (time.monotonic() - _last_call_at)
+            if wait > 0:
+                logger.debug("Holding GDELT request %.1fs to respect the rate limit", wait)
+                await asyncio.sleep(wait)
+        try:
+            return await _get_body(client, settings, params, timeout)
+        finally:
+            # Record even on failure: a rejected request still spent the slot.
+            _last_call_at = time.monotonic()
+
+
 async def _fetch_body_with_backoff(
     client: httpx.AsyncClient,
     settings: Settings,
@@ -249,7 +308,7 @@ async def _fetch_body_with_backoff(
     throttled = False
     for delay in delays:
         try:
-            body = await _get_body(client, settings, params, timeout)
+            body = await _spaced_get(client, settings, params, timeout)
             if not _is_rate_limited(body):
                 return body
             throttled = True
@@ -286,6 +345,22 @@ async def _fetch_body_with_backoff(
     raise NewsUnavailableError()  # unreachable: the loop always returns or raises
 
 
+# Raw GDELT results, keyed by the two inputs that shape the query. Focus areas
+# only affect ranking, so they are deliberately not part of the key. News moves
+# slowly enough that a short reuse window costs nothing in freshness and saves
+# the rate-limit slot entirely on a repeated or shared search.
+_articles_cache: Dict[Tuple[str, int], Tuple[float, List[dict]]] = {}
+
+
+def clear_cache() -> None:
+    """Drop cached GDELT results. For tests, and for a manual cache bust."""
+    _articles_cache.clear()
+
+
+def _cache_key(company: str, lookback_days: int) -> Tuple[str, int]:
+    return (" ".join(company.lower().split()), lookback_days)
+
+
 async def fetch_articles(
     company: str,
     lookback_days: int,
@@ -294,6 +369,13 @@ async def fetch_articles(
 ) -> List[dict]:
     """Fetch raw article metadata from the GDELT DOC 2.0 API."""
     settings = settings or get_settings()
+
+    key = _cache_key(company, lookback_days)
+    cached = _articles_cache.get(key)
+    if cached is not None and time.monotonic() < cached[0]:
+        logger.info("Serving %s (%sd) from cache; no GDELT call", company, lookback_days)
+        return list(cached[1])
+
     now = datetime.now(timezone.utc)
     params = {
         "query": build_query(company),
@@ -326,7 +408,10 @@ async def fetch_articles(
         raise NewsUnavailableError() from exc
 
     articles = payload.get("articles") if isinstance(payload, dict) else None
-    return [a for a in articles if isinstance(a, dict)] if isinstance(articles, list) else []
+    result = [a for a in articles if isinstance(a, dict)] if isinstance(articles, list) else []
+
+    _articles_cache[key] = (time.monotonic() + settings.gdelt_cache_seconds, list(result))
+    return result
 
 
 def deduplicate(articles: Sequence[dict]) -> List[dict]:
