@@ -1,0 +1,39 @@
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+
+# Node / Next.js
+node_modules/
+.pnp
+.pnp.*
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Tooling
+.vercel
+coverage/
+
+# Misc
+.DS_Store
+Thumbs.db
+*.pem

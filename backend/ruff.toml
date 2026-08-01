@@ -1,0 +1,44 @@
+# Ruff is the project's linter of record. Without this file every editor
+# applies its own defaults, which is how `typing.Dict` warnings show up in one
+# checkout and not another.
+#
+# Kept deliberately in ruff.toml rather than pyproject.toml: the backend is
+# deployed as a bare ASGI app (see vercel.json), not as a installable package,
+# and adding a pyproject.toml can change how build tooling treats this
+# directory.
+
+target-version = "py39"
+line-length = 120
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes: undefined names, unused imports
+    "I",    # import sorting
+    "B",    # bugbear: likely bugs
+    "C4",   # comprehension clarity
+    "SIM",  # simplifications
+    "RUF",  # ruff-specific checks
+]
+
+ignore = [
+    # FastAPI's dependency injection is expressed as `= Depends(...)` in the
+    # signature. This is the framework's documented API, not a mutable-default bug.
+    "B008",
+    # news_service deliberately matches en/em dashes and guillemets when it
+    # strips publisher tails from headlines, so those literals are the point.
+    "RUF001",
+    # Several module-level constants are written as a triple-quoted word list
+    # split on whitespace. That stays far easier to read and amend than a
+    # 40-element list of quoted strings.
+    "SIM905",
+]
+
+# UP (pyupgrade) is intentionally absent. PEP 585 builtin generics would work
+# on 3.9, but rewriting every annotation is churn this project has not opted
+# into; revisit it as one deliberate change rather than a drip of editor hints.
+
+[lint.per-file-ignores]
+# Fixture rows and the fake Gemini client read better as single long lines.
+"tests/*" = ["E501", "RUF005"]
