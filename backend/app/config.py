@@ -1,7 +1,7 @@
 """Application configuration, loaded from the environment."""
 
 from functools import lru_cache
-from typing import List, Literal, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,6 +24,16 @@ class Settings(BaseSettings):
 
     # Comma-separated list of allowed browser origins.
     allowed_origins: str = "http://localhost:3000"
+
+    # Optional regex for origins that cannot be listed literally. Vercel preview
+    # URLs change on every deploy, and their branch aliases are truncated and
+    # hashed once the hostname would exceed the 63-character DNS label limit, so
+    # there is no stable string to allowlist.
+    #
+    # Empty means "no regex" — see allowed_origin_pattern. Never set this to a
+    # bare ".*"; scope it to hosts you control, e.g.
+    #   ^https://[a-z0-9-]+-yourteam-projects\.vercel\.app$
+    allowed_origin_regex: str = ""
 
     # When true the API returns a bundled, clearly labelled sample brief instead
     # of calling Tavily/Gemini. Never used as a fallback for real failures.
@@ -68,6 +78,19 @@ class Settings(BaseSettings):
     @property
     def allowed_origin_list(self) -> List[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def allowed_origin_pattern(self) -> Optional[str]:
+        """The regex to hand to CORSMiddleware, or None when unset.
+
+        Current Starlette matches with `fullmatch`, so an empty pattern would
+        match only an empty origin — not every origin. The conversion to None is
+        kept regardless: it states the intent ("no regex configured") rather
+        than relying on that matching semantic, which older Starlette versions
+        did not share — they used `match`, where an empty pattern is a prefix
+        that matches anything.
+        """
+        return self.allowed_origin_regex.strip() or None
 
 
 @lru_cache
