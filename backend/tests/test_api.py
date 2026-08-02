@@ -233,3 +233,156 @@ def test_settings_parse_multiple_allowed_origins():
 
 def test_cors_is_not_wildcarded():
     assert "*" not in get_settings().allowed_origin_list
+
+
+# --- CORS ------------------------------------------------------------------
+
+PREVIEW_REGEX = r"^https://[a-z0-9-]+-davidshmavid1s-projects\.vercel\.app$"
+LISTED_ORIGIN = "http://localhost:3000"
+# Truncated-and-hashed Vercel branch alias: impossible to allowlist literally.
+PREVIEW_ORIGIN = "https://bain-vector-briefcase-inqq-git-b-7c4d7c-davidshmavid1s-projects.vercel.app"
+
+
+def preflight(test_client, origin: str):
+    return test_client.options(
+        "/api/v1/brief",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+
+def allowed_origin_header(settings, origin: str, **overrides):
+    """Drive the real middleware and return the granted origin, if any.
+
+    The middleware is constructed from module-level settings at import time, so
+    a fresh app is built per case rather than overriding the dependency.
+    """
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+
+    configured = settings.model_copy(update=overrides)
+    probe = FastAPI()
+    probe.add_middleware(
+        CORSMiddleware,
+        allow_origins=configured.allowed_origin_list,
+        allow_origin_regex=configured.allowed_origin_pattern,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+    )
+
+    @probe.post("/api/v1/brief")
+    async def _stub() -> dict:  # pragma: no cover - never invoked by a preflight
+        return {}
+
+    with TestClient(probe) as client:
+        response = preflight(client, origin)
+    return response.headers.get("access-control-allow-origin")
+
+
+def test_origin_in_the_explicit_list_is_allowed(settings):
+    granted = allowed_origin_header(settings, LISTED_ORIGIN, allowed_origins=LISTED_ORIGIN)
+
+    assert granted == LISTED_ORIGIN
+
+
+def test_preview_origin_is_allowed_by_regex(settings):
+    granted = allowed_origin_header(
+        settings, PREVIEW_ORIGIN, allowed_origins=LISTED_ORIGIN, allowed_origin_regex=PREVIEW_REGEX
+    )
+
+    assert granted == PREVIEW_ORIGIN
+
+
+def test_explicit_list_still_works_when_a_regex_is_set(settings):
+    granted = allowed_origin_header(
+        settings, LISTED_ORIGIN, allowed_origins=LISTED_ORIGIN, allowed_origin_regex=PREVIEW_REGEX
+    )
+
+    assert granted == LISTED_ORIGIN
+
+
+def test_unrelated_origin_is_rejected(settings):
+    granted = allowed_origin_header(
+        settings, "https://evil.com", allowed_origins=LISTED_ORIGIN, allowed_origin_regex=PREVIEW_REGEX
+    )
+
+    assert granted is None
+
+
+def test_another_vercel_account_is_rejected(settings):
+    # Same platform, different team: must not match.
+    granted = allowed_origin_header(
+        settings,
+        "https://something-someoneelses-projects.vercel.app",
+        allowed_origins=LISTED_ORIGIN,
+        allowed_origin_regex=PREVIEW_REGEX,
+    )
+
+    assert granted is None
+
+
+def test_suffix_lookalike_is_rejected(settings):
+    # Passes a naive "endswith"/search check; fullmatch anchoring must reject it.
+    granted = allowed_origin_header(
+        settings,
+        "https://x-davidshmavid1s-projects.vercel.app.evil.com",
+        allowed_origins=LISTED_ORIGIN,
+        allowed_origin_regex=PREVIEW_REGEX,
+    )
+
+    assert granted is None
+
+
+def test_subdomain_cannot_widen_the_pattern(settings):
+    # [a-z0-9-]+ excludes dots, so an extra label must not match.
+    granted = allowed_origin_header(
+        settings,
+        "https://evil.attacker-davidshmavid1s-projects.vercel.app",
+        allowed_origins=LISTED_ORIGIN,
+        allowed_origin_regex=PREVIEW_REGEX,
+    )
+
+    assert granted is None
+
+
+def test_empty_regex_does_not_widen_the_allowlist(settings):
+    """An unset regex must leave the explicit list as the only gate."""
+    granted = allowed_origin_header(
+        settings, "https://evil.com", allowed_origins=LISTED_ORIGIN, allowed_origin_regex=""
+    )
+
+    assert granted is None
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\n"])
+def test_blank_regex_yields_no_pattern(settings, raw):
+    assert settings.model_copy(update={"allowed_origin_regex": raw}).allowed_origin_pattern is None
+
+
+def test_configured_regex_is_passed_through(settings):
+    configured = settings.model_copy(update={"allowed_origin_regex": PREVIEW_REGEX})
+
+    assert configured.allowed_origin_pattern == PREVIEW_REGEX
+
+
+def test_the_app_wires_the_regex_into_cors_middleware():
+    """Guards the wiring in main.py, not just the property.
+
+    allowed_origin_pattern could be correct while main.py still passed the raw
+    string; this reads back what the running app actually configured.
+    """
+    from fastapi.middleware.cors import CORSMiddleware
+
+    cors = [m for m in app.user_middleware if m.cls is CORSMiddleware]
+    assert len(cors) == 1
+
+    configured = cors[0].kwargs
+    assert "allow_origin_regex" in configured, "main.py must pass allow_origin_regex"
+    # Unset here, and None rather than "" — see Settings.allowed_origin_pattern
+    # for why the distinction is kept even though fullmatch makes "" harmless.
+    assert configured["allow_origin_regex"] is None
+    assert "*" not in configured["allow_origins"]

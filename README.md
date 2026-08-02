@@ -82,6 +82,7 @@ failed request always surfaces as an error.
 | `GEMINI_API_KEY` | yes (unless `DEMO_MODE=true`) | — | Google AI Studio key. Server-side only; never sent to the browser. |
 | `GEMINI_MODEL` | no | `gemini-3.6-flash` | Gemini model id. |
 | `ALLOWED_ORIGINS` | no | `http://localhost:3000` | Comma-separated CORS origins. No wildcard is used. |
+| `ALLOWED_ORIGIN_REGEX` | no | — | Optional anchored regex for origins that cannot be listed literally, e.g. Vercel previews. Empty means unused. |
 | `DEMO_MODE` | no | `false` | Return the bundled sample brief instead of calling Tavily/Gemini. |
 
 ### `frontend/.env.local`
@@ -207,6 +208,30 @@ the rate gate and cache, Gemini failures and unparseable output, a successful `/
 response, and invalid source references in model output. One test asserts the API key never appears
 in an error response.
 
+### CORS and Vercel preview deployments
+
+Production has stable domains, so `ALLOWED_ORIGINS` handles it. Preview deployments do not:
+
+| URL type | Example | Problem |
+| --- | --- | --- |
+| Per-deployment | `…-inqq-ch88ftyv6-…` | a new hash on every push |
+| Branch alias | `…-inqq-git-b-7c4d7c-…` | truncated and hashed |
+
+The branch alias looks like the stable answer but is not reliably constructable. A hostname such as
+`bain-vector-briefcase-inqq-git-beta-2-preview-davidshmavid1s-projects` is 69 characters, and DNS
+labels cap at 63 — so Vercel truncates the branch name and appends a hash. The two projects truncate
+differently because their names differ in length.
+
+`ALLOWED_ORIGIN_REGEX` covers that case. Set it on the **Preview** scope only:
+
+```env
+ALLOWED_ORIGIN_REGEX=^https://[a-z0-9-]+-yourteam-projects\.vercel\.app$
+```
+
+Anchor it and pin it to your own account suffix. `[a-z0-9-]+` excludes dots, so an extra subdomain
+label cannot widen it, and Starlette matches with `fullmatch`, so a lookalike such as
+`https://x-yourteam-projects.vercel.app.evil.com` is rejected. Leave it unset in production.
+
 ## Deployment (two Vercel projects)
 
 Deploy the monorepo as two separate projects from the same repository.
@@ -220,6 +245,7 @@ Deploy the monorepo as two separate projects from the same repository.
    - `GEMINI_API_KEY` — your Gemini key
    - `GEMINI_MODEL` — `gemini-3.6-flash`
    - `ALLOWED_ORIGINS` — the deployed frontend origin, e.g. `https://your-frontend.vercel.app`
+   - `ALLOWED_ORIGIN_REGEX` — optional, Preview scope only (see above)
    - `DEMO_MODE` — `false`
 4. Deploy, then confirm `https://<backend>.vercel.app/health`.
 
