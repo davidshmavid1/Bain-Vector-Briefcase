@@ -1,19 +1,26 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import format_datetime
-from typing import List
 
 import httpx
 import pytest
 import respx
 
 from app.services import news_service
-from app.services.errors import NewsUnavailableError
-from tests.conftest import make_article, make_varied_articles
+from app.services.errors import NewsConfigError, NewsQuotaExceededError, NewsUnavailableError
+from tests.conftest import make_article, tavily_payload
 
 
-def test_build_query_quotes_company_and_restricts_language():
-    assert news_service.build_query("Acme Corp") == '"Acme Corp" sourcelang:english'
+def test_search_body_targets_news_and_the_requested_window(settings):
+    body = news_service.build_search_body("Acme Corp", 30, settings)
+
+    assert body["query"] == "Acme Corp"
+    # topic=news is what makes Tavily return published_date at all.
+    assert body["topic"] == "news"
+    assert body["search_depth"] == settings.tavily_search_depth
+    start = date.fromisoformat(body["start_date"])
+    end = date.fromisoformat(body["end_date"])
+    assert (end - start).days == 30
 
 
 def test_normalize_title_strips_publisher_tail_and_punctuation():
@@ -114,200 +121,6 @@ def test_to_sources_assigns_stable_sequential_ids():
     assert sources[0].snippet is None
 
 
-@pytest.mark.asyncio
-@respx.mock
-async def test_collect_sources_happy_path(settings):
-    payload = {"articles": make_varied_articles(8)}
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json=payload))
-
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
-
-    assert len(sources) == 8
-    assert [s.id for s in sources] == [f"source-{i}" for i in range(1, 9)]
-    assert all(s.url.startswith("https://") for s in sources)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_collect_sources_caps_at_max_sources(settings):
-    payload = {"articles": make_varied_articles(29)}
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json=payload))
-
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
-
-    assert len(sources) == settings.max_sources
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_empty_gdelt_results_return_no_sources(settings):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json={"articles": []}))
-
-    assert await news_service.collect_sources("Nonexistent Co", 7, settings=settings) == []
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_blank_gdelt_body_returns_no_sources(settings):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, text="   "))
-
-    assert await news_service.collect_sources("Nonexistent Co", 7, settings=settings) == []
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_non_json_gdelt_response_raises_news_unavailable(settings):
-    respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, text="Your query was malformed.")
-    )
-
-    with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
-
-
-RATE_LIMIT_BODY = "Please limit requests to one every 5 seconds or contact the maintainer."
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_rate_limited_response_is_retried_then_succeeds(settings):
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    respx.get(settings.gdelt_base_url).mock(
-        side_effect=[
-            httpx.Response(200, text=RATE_LIMIT_BODY),
-            httpx.Response(200, json={"articles": make_varied_articles(5)}),
-        ]
-    )
-
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert len(sources) == 5
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_persistent_rate_limiting_raises_a_clear_error(settings):
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, text=RATE_LIMIT_BODY))
-
-    with pytest.raises(NewsUnavailableError) as exc:
-        await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert "rate-limiting" in str(exc.value)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_http_429_is_retried_then_succeeds(settings):
-    # GDELT throttles with a real 429 as well as with a plain-text notice
-    # under HTTP 200; both have to survive a retry.
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    respx.get(settings.gdelt_base_url).mock(
-        side_effect=[
-            httpx.Response(429, text=RATE_LIMIT_BODY),
-            httpx.Response(200, json={"articles": make_varied_articles(5)}),
-        ]
-    )
-
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert len(sources) == 5
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_persistent_http_429_names_rate_limiting(settings):
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(429, text=RATE_LIMIT_BODY))
-
-    with pytest.raises(NewsUnavailableError) as exc:
-        await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert "rate-limiting" in str(exc.value)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_429_then_refused_connection_still_names_rate_limiting(settings):
-    # Observed live: GDELT answers 429 for a while, then stops accepting the
-    # connection entirely. The transport failure comes last, but throttling is
-    # still the real cause and the message has to say so.
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0, 0.0)})
-    respx.get(settings.gdelt_base_url).mock(
-        side_effect=[
-            httpx.Response(429, text=RATE_LIMIT_BODY),
-            httpx.Response(429, text=RATE_LIMIT_BODY),
-            httpx.ConnectTimeout("timed out"),
-        ]
-    )
-
-    with pytest.raises(NewsUnavailableError) as exc:
-        await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert "rate-limiting" in str(exc.value)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_transport_failure_alone_stays_generic(settings):
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    respx.get(settings.gdelt_base_url).mock(side_effect=httpx.ConnectTimeout("timed out"))
-
-    with pytest.raises(NewsUnavailableError) as exc:
-        await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert "rate-limiting" not in str(exc.value)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_client_error_status_fails_without_retrying(settings):
-    # A 400 means the query itself is wrong, so retrying only wastes the budget.
-    route = respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(400, text="bad query")
-    )
-
-    with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
-
-    assert route.call_count == 1
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_headlines_that_never_name_the_company_are_dropped(settings):
-    # GDELT full-text-searches article bodies, so off-topic headlines come back.
-    articles = make_varied_articles(6) + [
-        make_article("European indices close higher on energy and banking stocks", "reuters.com"),
-        make_article("Funky Taurus Media - Music Photo Agency and Products", "funkytaurus.com"),
-    ]
-    respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": articles})
-    )
-
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
-
-    assert len(sources) == 6
-    assert all("acme" in source.title.lower() for source in sources)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_headline_gate_relaxes_when_it_would_starve_the_brief(settings):
-    articles = make_varied_articles(1) + [
-        make_article("European indices close higher on energy and banking stocks", "reuters.com"),
-        make_article("Industrial output rises across the eurozone in June", "ft.com"),
-    ]
-    respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": articles})
-    )
-
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
-
-    assert len(sources) == 3
-    assert sources[0].title.startswith("Acme Corp")
-
-
 @pytest.mark.parametrize(
     ("domain", "expected"),
     [
@@ -343,73 +156,6 @@ def test_at_most_three_headlines_per_publisher_lead_the_ranking(settings):
     assert limited[3]["domain"] == "ft.com"
 
 
-@pytest.mark.asyncio
-@respx.mock
-async def test_gdelt_http_error_raises_news_unavailable(settings):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(503, text="unavailable"))
-
-    with pytest.raises(NewsUnavailableError) as exc:
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
-
-    assert "unavailable" in str(exc.value).lower()
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_persistent_gdelt_timeout_raises_news_unavailable(settings):
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    route = respx.get(settings.gdelt_base_url).mock(side_effect=httpx.ConnectTimeout("timed out"))
-
-    with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert route.call_count == 2
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_transient_gdelt_timeout_is_retried(settings):
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    respx.get(settings.gdelt_base_url).mock(
-        side_effect=[
-            httpx.ConnectTimeout("timed out"),
-            httpx.Response(200, json={"articles": make_varied_articles(5)}),
-        ]
-    )
-
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert len(sources) == 5
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_http_error_status_is_not_retried(settings):
-    fast_retry = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    route = respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(500, text="boom"))
-
-    with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=fast_retry)
-
-    assert route.call_count == 1
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_lookback_window_is_sent_to_gdelt(settings):
-    route = respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": []})
-    )
-
-    await news_service.collect_sources("Acme Corp", 7, settings=settings)
-
-    params = route.calls.last.request.url.params
-    start = datetime.strptime(params["startdatetime"], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-    delta = datetime.now(timezone.utc) - start
-    assert timedelta(days=7) - timedelta(minutes=2) < delta < timedelta(days=7, minutes=2)
-    assert json.loads(params["maxrecords"]) == settings.gdelt_max_records
-
-
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -425,7 +171,7 @@ async def test_lookback_window_is_sent_to_gdelt(settings):
         ("Acme Corp - Reuters", "Acme Corp - Reuters"),
     ],
 )
-def test_tidy_title_repairs_gdelt_spacing(raw, expected):
+def test_tidy_title_repairs_spaced_punctuation(raw, expected):
     assert news_service.tidy_title(raw) == expected
 
 
@@ -451,9 +197,6 @@ def test_spaced_hyphen_headlines_still_deduplicate():
     ]
 
     assert len(news_service.deduplicate(articles)) == 1
-
-
-# --- Retry-After handling -------------------------------------------------
 
 
 def _response_with(header_value):
@@ -493,68 +236,255 @@ def test_retry_after_in_the_past_is_zero():
     assert news_service._retry_after_seconds(_response_with(header), 30.0) == 0.0
 
 
+# --- Tavily retrieval -----------------------------------------------------
+
+
+TAVILY_URL = "https://api.tavily.com/search"
+
+
 @pytest.mark.asyncio
 @respx.mock
-async def test_retry_after_header_overrides_configured_delay(settings, monkeypatch):
-    slept: List[float] = []
+async def test_collect_sources_happy_path(settings):
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(8)))
+
+    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    assert len(sources) == 8
+    assert [s.id for s in sources] == [f"source-{i}" for i in range(1, 9)]
+    assert all(s.url.startswith("https://") for s in sources)
+    # The excerpt is the whole point of the move off GDELT.
+    assert all(s.snippet for s in sources)
+    assert all(s.published_at is not None for s in sources)
+
+    request = route.calls.last.request
+    assert request.headers["Authorization"] == f"Bearer {settings.tavily_api_key}"
+    assert json.loads(request.content)["topic"] == "news"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_configured_search_depth_reaches_the_request(settings):
+    deep = settings.model_copy(update={"tavily_search_depth": "advanced"})
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(5)))
+
+    await news_service.collect_sources("Acme Corp", 30, settings=deep)
+
+    assert json.loads(route.calls.last.request.content)["search_depth"] == "advanced"
+
+
+@pytest.mark.parametrize("lookback", [7, 30, 90])
+@pytest.mark.asyncio
+@respx.mock
+async def test_lookback_window_is_sent_as_dates(settings, lookback):
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(5)))
+
+    await news_service.collect_sources("Acme Corp", lookback, settings=settings)
+
+    body = json.loads(route.calls.last.request.content)
+    start = date.fromisoformat(body["start_date"])
+    end = date.fromisoformat(body["end_date"])
+    assert (end - start).days == lookback
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_results_are_normalised_onto_the_internal_shape(settings):
+    payload = {
+        "results": [
+            {
+                "title": "Acme Corp opens a plant in Ohio",
+                "url": "https://www.reuters.com/business/acme-plant",
+                "content": "  Acme Corp said   it opened a plant.  ",
+                "score": 0.94,
+                "published_date": "2026-07-30T12:00:00Z",
+            }
+        ]
+    }
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=payload))
+
+    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    source = sources[0]
+    assert source.url == "https://www.reuters.com/business/acme-plant"
+    # Tavily sends no domain field, so the publisher is derived from the URL.
+    assert source.publisher == "Reuters"
+    assert source.snippet == "Acme Corp said it opened a plant."
+    assert source.published_at.year == 2026
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_malformed_results_are_dropped_not_fatal(settings):
+    payload = {
+        "results": [
+            {"title": "", "url": "https://reuters.com/a", "content": "x"},
+            {"title": "Acme Corp raises full-year guidance today", "url": ""},
+            {"title": "Acme Corp names a new chief financial officer", "url": "not-a-url"},
+            *tavily_payload(4)["results"],
+        ]
+    }
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=payload))
+
+    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    assert len(sources) == 4
+
+
+@pytest.mark.asyncio
+async def test_missing_key_fails_before_any_http_call(settings):
+    unconfigured = settings.model_copy(update={"tavily_api_key": ""})
+
+    with pytest.raises(NewsConfigError) as exc:
+        await news_service.collect_sources("Acme Corp", 30, settings=unconfigured)
+
+    assert "TAVILY_API_KEY" in str(exc.value)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_empty_results_return_no_sources(settings):
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json={"results": []}))
+
+    assert await news_service.collect_sources("Nonexistent Co", 7, settings=settings) == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_response_without_results_list_is_an_error(settings):
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json={"unexpected": True}))
+
+    with pytest.raises(NewsUnavailableError):
+        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+
+# --- error mapping --------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.asyncio
+@respx.mock
+async def test_rejected_key_fails_fast_without_retrying(settings, status):
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(status, json={"error": "bad key"}))
+
+    with pytest.raises(NewsConfigError):
+        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    assert route.call_count == 1  # waiting will not fix a bad key
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_quota_exhaustion_is_reported_distinctly(settings):
+    route = respx.post(TAVILY_URL).mock(
+        return_value=httpx.Response(429, json={"code": "QUOTA_EXCEEDED", "error": "monthly credits used"})
+    )
+
+    with pytest.raises(NewsQuotaExceededError) as exc:
+        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    assert "quota" in str(exc.value).lower()
+    assert route.call_count == 1  # a retry cannot conjure credits
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_rate_limit_is_retried_then_succeeds(settings, monkeypatch):
+    slept = []
 
     async def record_sleep(seconds):
         slept.append(seconds)
 
     monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
-    respx.get(settings.gdelt_base_url).mock(
+    respx.post(TAVILY_URL).mock(
         side_effect=[
-            httpx.Response(429, headers={"Retry-After": "3"}, text="slow down"),
-            httpx.Response(200, json={"articles": make_varied_articles(5)}),
+            httpx.Response(429, headers={"retry-after": "4"}, json={"error": "too many requests"}),
+            httpx.Response(200, json=tavily_payload(5)),
         ]
     )
 
     sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
 
     assert len(sources) == 5
-    assert slept == [3.0]  # the header, not the configured 6.0
+    assert slept == [4.0]  # the header wins over the configured delay
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_without_retry_after_the_configured_delay_is_used(settings, monkeypatch):
-    slept: List[float] = []
-
-    async def record_sleep(seconds):
-        slept.append(seconds)
-
-    monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
-    respx.get(settings.gdelt_base_url).mock(
-        side_effect=[
-            httpx.Response(429, text="slow down"),
-            httpx.Response(200, json={"articles": make_varied_articles(5)}),
-        ]
+async def test_persistent_rate_limiting_raises_news_unavailable(settings, monkeypatch):
+    monkeypatch.setattr(news_service.asyncio, "sleep", _no_sleep)
+    route = respx.post(TAVILY_URL).mock(
+        return_value=httpx.Response(429, json={"error": "too many requests"})
     )
 
-    await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    with pytest.raises(NewsUnavailableError):
+        await news_service.collect_sources("Acme Corp", 30, settings=settings)
 
-    assert slept == [settings.gdelt_retry_delays[0]]
+    assert route.call_count == 2
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_absurd_retry_after_is_clamped(settings, monkeypatch):
-    slept: List[float] = []
-
-    async def record_sleep(seconds):
-        slept.append(seconds)
-
-    monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
-    respx.get(settings.gdelt_base_url).mock(
+async def test_server_error_is_retried(settings, monkeypatch):
+    monkeypatch.setattr(news_service.asyncio, "sleep", _no_sleep)
+    respx.post(TAVILY_URL).mock(
         side_effect=[
-            httpx.Response(429, headers={"Retry-After": "86400"}, text="slow down"),
-            httpx.Response(200, json={"articles": make_varied_articles(5)}),
+            httpx.Response(503, json={"error": "unavailable"}),
+            httpx.Response(200, json=tavily_payload(5)),
         ]
     )
 
-    await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    assert len(await news_service.collect_sources("Acme Corp", 30, settings=settings)) == 5
 
-    assert slept == [settings.gdelt_max_retry_delay]
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_client_error_is_not_retried(settings, monkeypatch):
+    monkeypatch.setattr(news_service.asyncio, "sleep", _no_sleep)
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(400, json={"error": "bad request"}))
+
+    with pytest.raises(NewsUnavailableError):
+        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_transient_timeout_is_retried(settings, monkeypatch):
+    monkeypatch.setattr(news_service.asyncio, "sleep", _no_sleep)
+    respx.post(TAVILY_URL).mock(
+        side_effect=[httpx.ConnectTimeout("slow"), httpx.Response(200, json=tavily_payload(5))]
+    )
+
+    assert len(await news_service.collect_sources("Acme Corp", 30, settings=settings)) == 5
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_persistent_timeout_raises_news_unavailable(settings, monkeypatch):
+    monkeypatch.setattr(news_service.asyncio, "sleep", _no_sleep)
+    route = respx.post(TAVILY_URL).mock(side_effect=httpx.ConnectTimeout("slow"))
+
+    with pytest.raises(NewsUnavailableError):
+        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    assert route.call_count == 2
+
+
+@pytest.mark.parametrize("status", [401, 429, 400, 503])
+@pytest.mark.asyncio
+@respx.mock
+async def test_the_api_key_never_appears_in_an_error(settings, monkeypatch, status):
+    monkeypatch.setattr(news_service.asyncio, "sleep", _no_sleep)
+    # An upstream that echoes the key back must not leak it onward.
+    respx.post(TAVILY_URL).mock(
+        return_value=httpx.Response(status, json={"error": f"rejected key {settings.tavily_api_key}"})
+    )
+
+    with pytest.raises(Exception) as exc:
+        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+
+    assert settings.tavily_api_key not in str(exc.value)
 
 
 # --- rate gate and cache --------------------------------------------------
@@ -562,78 +492,8 @@ async def test_absurd_retry_after_is_clamped(settings, monkeypatch):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_outbound_calls_are_spaced_by_the_minimum_interval(settings, monkeypatch):
-    """The gate must prevent a 429, not just react to one."""
-    slept: List[float] = []
-    real_sleep = news_service.asyncio.sleep
-
-    async def record_sleep(seconds):
-        slept.append(seconds)
-        await real_sleep(0)
-
-    monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
-    spaced = settings.model_copy(update={"gdelt_min_interval_seconds": 5.0})
-    respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": make_varied_articles(5)})
-    )
-
-    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
-    news_service.clear_cache()  # force a second real fetch
-    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
-
-    assert len(slept) == 1
-    assert 0 < slept[0] <= 5.0
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_first_call_is_not_delayed(settings, monkeypatch):
-    slept: List[float] = []
-
-    async def record_sleep(seconds):
-        slept.append(seconds)
-
-    monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
-    spaced = settings.model_copy(update={"gdelt_min_interval_seconds": 5.0})
-    respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": make_varied_articles(5)})
-    )
-
-    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
-
-    assert slept == []
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_concurrent_searches_do_not_race_into_a_burst(settings, monkeypatch):
-    """Five simultaneous searches must serialise, not fire five parallel calls."""
-    in_flight = 0
-    max_in_flight = 0
-
-    async def tracking_get(client, s, params, timeout):
-        nonlocal in_flight, max_in_flight
-        in_flight += 1
-        max_in_flight = max(max_in_flight, in_flight)
-        await news_service.asyncio.sleep(0)
-        in_flight -= 1
-        return json.dumps({"articles": make_varied_articles(5)})
-
-    monkeypatch.setattr(news_service, "_get_body", tracking_get)
-
-    await news_service.asyncio.gather(
-        *(news_service.collect_sources(f"Company {i}", 30, settings=settings) for i in range(5))
-    )
-
-    assert max_in_flight == 1
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_repeat_search_is_served_from_cache(settings):
-    route = respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": make_varied_articles(6)})
-    )
+async def test_repeat_search_spends_no_credit(settings):
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
 
     first = await news_service.collect_sources("Acme Corp", 30, settings=settings)
     second = await news_service.collect_sources("Acme Corp", 30, settings=settings)
@@ -645,9 +505,7 @@ async def test_repeat_search_is_served_from_cache(settings):
 @pytest.mark.asyncio
 @respx.mock
 async def test_cache_key_ignores_case_and_padding(settings):
-    route = respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": make_varied_articles(6)})
-    )
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
 
     await news_service.collect_sources("Acme Corp", 30, settings=settings)
     await news_service.collect_sources("  acme   corp ", 30, settings=settings)
@@ -658,9 +516,7 @@ async def test_cache_key_ignores_case_and_padding(settings):
 @pytest.mark.asyncio
 @respx.mock
 async def test_a_different_window_is_fetched_separately(settings):
-    route = respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": make_varied_articles(6)})
-    )
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
 
     await news_service.collect_sources("Acme Corp", 30, settings=settings)
     await news_service.collect_sources("Acme Corp", 7, settings=settings)
@@ -671,10 +527,8 @@ async def test_a_different_window_is_fetched_separately(settings):
 @pytest.mark.asyncio
 @respx.mock
 async def test_expired_cache_entry_is_refetched(settings):
-    brief_cache = settings.model_copy(update={"gdelt_cache_seconds": 0.0})
-    route = respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json={"articles": make_varied_articles(6)})
-    )
+    brief_cache = settings.model_copy(update={"tavily_cache_seconds": 0.0})
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
 
     await news_service.collect_sources("Acme Corp", 30, settings=brief_cache)
     await news_service.collect_sources("Acme Corp", 30, settings=brief_cache)
@@ -684,19 +538,83 @@ async def test_expired_cache_entry_is_refetched(settings):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_failed_fetch_is_not_cached(settings):
-    """A 429 must not poison the cache with an empty result."""
-    fast = settings.model_copy(update={"gdelt_retry_delays": (0.0,)})
-    respx.get(settings.gdelt_base_url).mock(
+async def test_failed_search_is_not_cached(settings, monkeypatch):
+    monkeypatch.setattr(news_service.asyncio, "sleep", _no_sleep)
+    respx.post(TAVILY_URL).mock(
         side_effect=[
-            httpx.Response(429, text="slow down"),
-            httpx.Response(429, text="slow down"),
-            httpx.Response(200, json={"articles": make_varied_articles(6)}),
+            httpx.Response(503, json={"error": "x"}),
+            httpx.Response(503, json={"error": "x"}),
+            httpx.Response(200, json=tavily_payload(6)),
         ]
     )
 
     with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=fast)
+        await news_service.collect_sources("Acme Corp", 30, settings=settings)
 
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=fast)
-    assert len(sources) == 6
+    assert len(await news_service.collect_sources("Acme Corp", 30, settings=settings)) == 6
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_first_call_is_not_delayed(settings, monkeypatch):
+    slept = []
+
+    async def record_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
+    spaced = settings.model_copy(update={"tavily_min_interval_seconds": 5.0})
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(5)))
+
+    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+
+    assert slept == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_outbound_calls_are_spaced_by_the_minimum_interval(settings, monkeypatch):
+    slept = []
+    real_sleep = news_service.asyncio.sleep
+
+    async def record_sleep(seconds):
+        slept.append(seconds)
+        await real_sleep(0)
+
+    monkeypatch.setattr(news_service.asyncio, "sleep", record_sleep)
+    spaced = settings.model_copy(update={"tavily_min_interval_seconds": 5.0})
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(5)))
+
+    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+    news_service.clear_cache()
+    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+
+    assert len(slept) == 1
+    assert 0 < slept[0] <= 5.0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_concurrent_searches_do_not_race_into_a_burst(settings, monkeypatch):
+    in_flight = 0
+    max_in_flight = 0
+
+    async def tracking_post(client, s, body, timeout):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await news_service.asyncio.sleep(0)
+        in_flight -= 1
+        return tavily_payload(5)
+
+    monkeypatch.setattr(news_service, "_post_search", tracking_post)
+
+    await news_service.asyncio.gather(
+        *(news_service.collect_sources(f"Company {i}", 30, settings=settings) for i in range(5))
+    )
+
+    assert max_in_flight == 1
+
+
+async def _no_sleep(_seconds):
+    return None

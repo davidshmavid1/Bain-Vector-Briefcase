@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings, get_settings
 from app.main import app
 from app.services.errors import AnalysisUnavailableError
-from tests.conftest import make_varied_articles
+from tests.conftest import tavily_payload
 
 
 @pytest.fixture
@@ -17,8 +17,11 @@ def client(settings):
     app.dependency_overrides.clear()
 
 
-def gdelt_payload(count: int = 8) -> dict:
-    return {"articles": make_varied_articles(count)}
+TAVILY_URL = "https://api.tavily.com/search"
+
+
+def news_payload(count: int = 8) -> dict:
+    return tavily_payload(count)
 
 
 def test_health_reports_status(client):
@@ -57,7 +60,7 @@ def test_invalid_requests_return_422(client, payload):
 @pytest.mark.parametrize("lookback", [7, 30, 90])
 @respx.mock
 def test_supported_lookbacks_are_accepted(client, settings, monkeypatch, fake_gemini, analysis, lookback):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json=gdelt_payload()))
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=news_payload()))
     fake_gemini(monkeypatch, parsed=analysis)
 
     response = client.post("/api/v1/brief", json={"company": "Acme Corp", "lookback_days": lookback})
@@ -70,8 +73,8 @@ def test_company_name_is_trimmed_and_focus_areas_normalized(
     client, settings, monkeypatch, fake_gemini, analysis
 ):
     with respx.mock:
-        respx.get(settings.gdelt_base_url).mock(
-            return_value=httpx.Response(200, json=gdelt_payload())
+        respx.post(TAVILY_URL).mock(
+            return_value=httpx.Response(200, json=news_payload())
         )
         fake_gemini(monkeypatch, parsed=analysis)
 
@@ -89,7 +92,7 @@ def test_company_name_is_trimmed_and_focus_areas_normalized(
 
 @respx.mock
 def test_successful_brief_response(client, settings, monkeypatch, fake_gemini, analysis):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json=gdelt_payload()))
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=news_payload()))
     fake_gemini(monkeypatch, parsed=analysis)
 
     response = client.post(
@@ -130,7 +133,7 @@ def test_invalid_source_references_are_stripped_from_the_response(
             ],
         }
     )
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json=gdelt_payload()))
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=news_payload()))
     fake_gemini(monkeypatch, parsed=hallucinated)
 
     body = client.post("/api/v1/brief", json={"company": "Acme Corp"}).json()
@@ -144,7 +147,7 @@ def test_invalid_source_references_are_stripped_from_the_response(
 
 @respx.mock
 def test_no_articles_returns_friendly_404(client, settings):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json={"articles": []}))
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json={"results": []}))
 
     response = client.post("/api/v1/brief", json={"company": "Nonexistent Holdings"})
 
@@ -154,8 +157,8 @@ def test_no_articles_returns_friendly_404(client, settings):
 
 @respx.mock
 def test_too_few_articles_returns_friendly_404(client, settings):
-    respx.get(settings.gdelt_base_url).mock(
-        return_value=httpx.Response(200, json=gdelt_payload(count=2))
+    respx.post(TAVILY_URL).mock(
+        return_value=httpx.Response(200, json=news_payload(count=2))
     )
 
     response = client.post("/api/v1/brief", json={"company": "Tiny Co"})
@@ -164,8 +167,8 @@ def test_too_few_articles_returns_friendly_404(client, settings):
 
 
 @respx.mock
-def test_gdelt_failure_returns_503_without_stack_trace(client, settings):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(500, text="boom"))
+def test_news_failure_returns_503_without_stack_trace(client, settings):
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(500, json={"error": "boom"}))
 
     response = client.post("/api/v1/brief", json={"company": "Acme Corp"})
 
@@ -177,7 +180,7 @@ def test_gdelt_failure_returns_503_without_stack_trace(client, settings):
 
 @respx.mock
 def test_gemini_failure_returns_503_without_leaking_secrets(client, settings, monkeypatch, fake_gemini):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json=gdelt_payload()))
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=news_payload()))
     fake_gemini(monkeypatch, side_effect=RuntimeError("PERMISSION_DENIED api_key=AIzaSuperSecret"))
 
     response = client.post("/api/v1/brief", json={"company": "Acme Corp"})
@@ -190,7 +193,7 @@ def test_gemini_failure_returns_503_without_leaking_secrets(client, settings, mo
 
 @respx.mock
 def test_failures_never_fall_back_to_demo_data(client, settings, monkeypatch, fake_gemini):
-    respx.get(settings.gdelt_base_url).mock(return_value=httpx.Response(200, json=gdelt_payload()))
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=news_payload()))
     fake_gemini(monkeypatch, side_effect=AnalysisUnavailableError())
 
     response = client.post("/api/v1/brief", json={"company": "Acme Corp"})
@@ -207,8 +210,8 @@ def test_demo_mode_returns_labelled_sample_without_upstream_calls(settings):
     app.dependency_overrides[get_settings] = lambda: demo_settings
 
     with respx.mock(assert_all_called=False) as mock:
-        blocked = mock.get(settings.gdelt_base_url).mock(
-            return_value=httpx.Response(200, json={"articles": []})
+        blocked = mock.post(TAVILY_URL).mock(
+            return_value=httpx.Response(200, json={"results": []})
         )
         with TestClient(app) as demo_client:
             response = demo_client.post("/api/v1/brief", json={"company": "Acme Corp"})

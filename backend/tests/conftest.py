@@ -9,7 +9,7 @@ from app.schemas import AnalysisDevelopment, AnalysisInsight, BriefAnalysis, Sou
 
 @pytest.fixture(autouse=True)
 def isolate_news_service_state():
-    """The GDELT cache and rate gate are module-level, so reset them around
+    """The result cache and rate gate are module-level, so reset them around
     every test — otherwise one case's cached result satisfies the next case's
     request and its call-count assertions silently pass."""
     from app.services import news_service
@@ -28,9 +28,10 @@ def settings() -> Settings:
         gemini_model="gemini-2.5-flash",
         allowed_origins="http://localhost:3000",
         demo_mode=False,
-        # Real spacing would add 5s to every test that touches GDELT. The gate's
+        tavily_api_key="tvly-test-key",
+        # Real spacing would slow every test that touches retrieval. The gate's
         # behaviour is covered explicitly in test_news_service.py instead.
-        gdelt_min_interval_seconds=0.0,
+        tavily_min_interval_seconds=0.0,
     )
 
 
@@ -39,17 +40,50 @@ def make_article(
     domain: str = "reuters.com",
     days_ago: int = 1,
     url: Optional[str] = None,
+    snippet: Optional[str] = None,
 ) -> dict:
+    """An article in the internal normalised shape, i.e. post-`_normalize_result`.
+
+    Pipeline tests (dedup, ranking, publisher capping) consume this directly and
+    are deliberately independent of whichever provider produced it.
+    """
     seen = datetime.now(timezone.utc) - timedelta(days=days_ago)
     return {
         "url": url or f"https://{domain}/{abs(hash(title)) % 10**8}",
-        "url_mobile": "",
         "title": title,
-        "seendate": seen.strftime("%Y%m%dT%H%M%SZ"),
-        "socialimage": "",
+        "seendate": seen.isoformat(),
         "domain": domain,
-        "language": "English",
-        "sourcecountry": "United States",
+        "snippet": snippet,
+    }
+
+
+def make_tavily_result(
+    title: str,
+    domain: str = "reuters.com",
+    days_ago: int = 1,
+    url: Optional[str] = None,
+    content: str = "A short excerpt from the article body.",
+) -> dict:
+    """A raw Tavily result, i.e. what the API actually returns pre-normalisation."""
+    seen = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return {
+        "title": title,
+        "url": url or f"https://{domain}/{abs(hash(title)) % 10**8}",
+        "content": content,
+        "score": 0.9,
+        "published_date": seen.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def tavily_payload(count: int) -> dict:
+    """A full Tavily search response carrying `count` distinct results."""
+    return {
+        "query": "Acme Corp",
+        "results": [
+            make_tavily_result(headline, domain=f"publisher{i}.com", days_ago=i)
+            for i, headline in enumerate(DISTINCT_HEADLINES[:count], start=1)
+        ],
+        "response_time": 1.2,
     }
 
 
