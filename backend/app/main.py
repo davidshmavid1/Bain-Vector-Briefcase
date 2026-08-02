@@ -20,11 +20,14 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Explicit origin list only — no wildcard, so credentials and production
-# deployments stay safe.
+# An explicit origin list, plus an optional regex for hosts whose names are not
+# stable enough to list — Vercel preview URLs change every deploy. Never a
+# wildcard: the regex must be anchored and scoped to hosts we control, and
+# `allowed_origin_pattern` is None when unset rather than an empty string.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origin_list,
+    allow_origin_regex=settings.allowed_origin_pattern,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
