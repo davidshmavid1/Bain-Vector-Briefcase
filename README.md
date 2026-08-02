@@ -5,7 +5,7 @@ coverage — what happened, why it matters, the risks and opportunities it opens
 worth using, and the questions worth asking. Every finding cites the sources behind it.
 
 - **Frontend** — Next.js (App Router), React, TypeScript, Tailwind CSS, shadcn/ui
-- **Backend** — FastAPI, Pydantic v2, `httpx`, GDELT DOC 2.0, Gemini Flash via `google-genai`
+- **Backend** — FastAPI, Pydantic v2, `httpx`, Tavily news search, Gemini Flash via `google-genai`
 
 All retrieval, filtering, ranking, analysis, API-key handling and business logic live in the Python
 backend. The frontend is a presentation layer that calls one endpoint with `fetch`; there are no
@@ -32,6 +32,7 @@ Next.js Route Handlers.
 
 - Node.js 20.9+
 - Python 3.14+
+- A Tavily API key from [tavily.com](https://www.tavily.com) — free "Researcher" tier, 1,000 searches/month, no card
 - A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey) (free tier is enough)
 
 No database, queue, cache or other paid infrastructure is required.
@@ -45,7 +46,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env      # then add your GEMINI_API_KEY
+cp .env.example .env      # then add TAVILY_API_KEY and GEMINI_API_KEY
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -76,10 +77,12 @@ failed request always surfaces as an error.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
+| `TAVILY_API_KEY` | yes (unless `DEMO_MODE=true`) | — | Tavily search key. Server-side only; never sent to the browser. |
+| `TAVILY_SEARCH_DEPTH` | no | `basic` | `basic` (1 credit/search) or `advanced` (2). |
 | `GEMINI_API_KEY` | yes (unless `DEMO_MODE=true`) | — | Google AI Studio key. Server-side only; never sent to the browser. |
 | `GEMINI_MODEL` | no | `gemini-3.6-flash` | Gemini model id. |
 | `ALLOWED_ORIGINS` | no | `http://localhost:3000` | Comma-separated CORS origins. No wildcard is used. |
-| `DEMO_MODE` | no | `false` | Return the bundled sample brief instead of calling GDELT/Gemini. |
+| `DEMO_MODE` | no | `false` | Return the bundled sample brief instead of calling Tavily/Gemini. |
 
 ### `frontend/.env.local`
 
@@ -117,17 +120,17 @@ Responses:
 | `200` | A validated `CompanyBrief`. |
 | `422` | Request validation failed, with per-field detail. |
 | `404` | No usable recent coverage for that company in the window. |
-| `503` | GDELT or Gemini was unavailable, or `GEMINI_API_KEY` is unset. |
+| `503` | Tavily or Gemini was unavailable, a key is unset or rejected, or the monthly search quota is exhausted. |
 
 Upstream failures return a short, user-facing `detail` string. Stack traces, upstream payloads and
 API keys are never included in a response.
 
 ## How a brief is produced
 
-1. **Retrieve** — one GDELT DOC 2.0 `ArtList` query, scoped to the lookback window and English
-   sources. Only metadata is used (headline, publisher domain, timestamp, URL); article bodies are
-   never fetched or scraped.
-2. **Filter** — malformed records are dropped, and because GDELT full-text-searches article
+1. **Retrieve** — one Tavily `topic="news"` search scoped to the lookback window via
+   `start_date`/`end_date`. Only metadata is used: headline, excerpt, publisher domain, timestamp
+   and URL. Full article bodies are never fetched or scraped.
+2. **Filter** — malformed records are dropped, and because full-text search matches article
    *bodies*, headlines that never name the company are dropped too. That gate relaxes automatically
    if it would leave too little to work with.
 3. **Deduplicate** — by URL, by normalised headline (publisher tails like `— Reuters` removed), and
@@ -141,31 +144,46 @@ API keys are never included in a response.
 6. **Verify** — any `source_ids` the model invents are stripped; an item left with no valid citation
    is dropped entirely, and confidence is downgraded when the surviving evidence is thin.
 
+### Why Tavily
+
+Retrieval originally used GDELT's keyless DOC 2.0 API. It works and has no monthly cap, but it
+throttles per **IP** at one request every five seconds — so every tester on a network shares a
+12-requests-per-minute budget, and a backend deployed to Vercel would share its IP with strangers.
+No amount of client-side care creates capacity that does not exist.
+
+Tavily's free tier binds the quota to the key instead:
+
+| | GDELT keyless | Tavily free |
+| --- | --- | --- |
+| Monthly cap | none | 1,000 searches |
+| Throughput | 12/min, per IP | 100/min, per key |
+| Rate-limit signal | `HTTP 200` + English prose | `429` + `Retry-After` |
+| Article excerpts | none | yes |
+
+The excerpts matter most. Under GDELT, `Source.snippet` was always empty and the model reasoned
+from bare headlines. Tavily returns a `content` excerpt per result, which flows through to the
+prompt as evidence the model may cite.
+
 ### Known upstream behaviour
 
-GDELT asks for at most one request every five seconds and throttles in three different ways: an
-`HTTP 429`, a plain-text notice under `HTTP 200`, or by refusing the connection outright. The news
-service detects all three and retries twice with a backoff (6s, then 15s), and otherwise returns a
-clear "rate-limiting" message rather than an empty result. Every other error status stays
-fail-fast, since a bad query will not fix itself.
+Transient failures — `429` rate limiting, `5xx`, timeouts — are retried once. A `Retry-After`
+header, in either delta-seconds or HTTP-date form, overrides the configured delay and is clamped to
+`tavily_max_retry_delay` (30s).
 
-If a throttled response carries a `Retry-After` header — in either delta-seconds or HTTP-date form
-— that value overrides the fixed schedule, because the server knows better than we do how long it
-wants to be left alone. It is clamped to `gdelt_max_retry_delay` (30s) so an outsized value cannot
-hold a brief request open. GDELT does not currently send the header on its 429s, but honouring it
-is the correct default for any rate-limited upstream.
+Three cases deliberately fail fast, because waiting cannot fix them: `401`/`403` (bad key), a `429`
+whose body names a quota or credit problem (monthly allowance exhausted), and any other `4xx`.
 
-A busy window can outlast both retries. When that happens the request fails with the rate-limiting
-message after roughly 50 seconds; waiting a minute and retrying is usually enough.
+Outbound calls are serialised behind a lock and spaced by `tavily_min_interval_seconds`, so
+concurrent searches queue rather than bursting past the per-minute ceiling. Raw results are cached
+for `tavily_cache_seconds` (10 min) keyed on company and window, so a repeat or shared search costs
+no credit at all.
 
 Gemini throttles and overloads too: an overloaded model returns `503 UNAVAILABLE` and a quota bite
 returns `429`. Both clear on their own, so the analysis service retries once after 3s. A `400`,
-`401`, `403` or `404` — bad key, bad model id, malformed request — fails immediately, because
-waiting will not fix it.
+`401`, `403` or `404` — bad key, bad model id, malformed request — fails immediately.
 
-One brief costs exactly **one** GDELT request and **one** Gemini request (plus at most one retry
-each, only on transient failures). Rapid repeated searches — or several people behind one egress IP
-— are what exhaust the per-IP allowance, not normal use.
+One brief costs exactly **one** Tavily credit and **one** Gemini request, plus at most one retry
+each on transient failures. Every cache hit costs nothing.
 
 ## Testing and verification
 
@@ -181,10 +199,13 @@ is deliberately *not* part of the workflow; the existing layout is hand-tuned.
 cd frontend && npx tsc --noEmit && npm run lint && npm run build
 ```
 
-Backend tests mock GDELT (via `respx`) and Gemini (via a fake client); no test makes a live call to
-either service. Coverage includes request validation, deduplication, ranking determinism, the
-headline relevance gate, empty and throttled GDELT results, Gemini failures and unparseable output,
-a successful `/api/v1/brief` response, and invalid source references in model output.
+Backend tests mock Tavily (via `respx`) and Gemini (via a fake client); **no test makes a live call
+to either service, so running the suite spends no credits.** Coverage includes request validation,
+the Tavily request shape and result normalisation, deduplication, ranking determinism, the headline
+relevance gate, every mapped upstream error (rejected key, quota exhausted, rate limited, timeout),
+the rate gate and cache, Gemini failures and unparseable output, a successful `/api/v1/brief`
+response, and invalid source references in model output. One test asserts the API key never appears
+in an error response.
 
 ## Deployment (two Vercel projects)
 
@@ -195,7 +216,8 @@ Deploy the monorepo as two separate projects from the same repository.
 1. New Project → import the repo → set **Root Directory** to `backend`.
 2. `backend/vercel.json` already routes all traffic to the ASGI app in `app/main.py`.
 3. Environment variables:
-   - `GEMINI_API_KEY` — your key
+   - `TAVILY_API_KEY` — your Tavily key
+   - `GEMINI_API_KEY` — your Gemini key
    - `GEMINI_MODEL` — `gemini-3.6-flash`
    - `ALLOWED_ORIGINS` — the deployed frontend origin, e.g. `https://your-frontend.vercel.app`
    - `DEMO_MODE` — `false`

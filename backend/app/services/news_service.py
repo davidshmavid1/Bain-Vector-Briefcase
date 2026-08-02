@@ -1,31 +1,28 @@
-"""GDELT news retrieval, deduplication and deterministic ranking.
+"""Tavily news retrieval, deduplication and deterministic ranking.
 
-Only GDELT article *metadata* is used (headline, publisher domain, timestamp,
-URL). Article bodies are never fetched or scraped.
+Only article *metadata* is used (headline, snippet, publisher domain, timestamp,
+URL). Full article bodies are never fetched or scraped.
+
+Retrieval is provider-specific; everything below `deduplicate()` operates on a
+normalised article dict and is deliberately provider-agnostic.
 """
 
 import asyncio
-import json
 import logging
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 import httpx
 
 from ..config import Settings, get_settings
 from ..schemas import Source
-from .errors import NewsUnavailableError
+from .errors import NewsConfigError, NewsQuotaExceededError, NewsUnavailableError
 
 logger = logging.getLogger(__name__)
-
-# GDELT's DOC 2.0 "ArtList" mode returns these fields per article:
-# url, url_mobile, title, seendate, socialimage, domain, language, sourcecountry.
-# There is no abstract/snippet field, so Source.snippet stays empty here.
-_GDELT_TIMESTAMP = "%Y%m%dT%H%M%SZ"
-_GDELT_WINDOW = "%Y%m%d%H%M%S"
 
 _TITLE_NOISE = re.compile(r"[^a-z0-9 ]+")
 _PUBLISHER_TAIL = re.compile(r"\s+[-|–—»:]\s+[^-|–—»:]{2,40}$")
@@ -60,16 +57,10 @@ _LOW_VALUE_DOMAINS = frozenset(
 )
 
 
-def build_query(company: str) -> str:
-    """GDELT query string: exact company phrase, English sources only."""
-    phrase = company.replace('"', " ").strip()
-    return f'"{phrase}" sourcelang:english'
-
-
-# GDELT pads punctuation with spaces ("Siemens , Nvidia advance self - verifying
-# workflows"). Repairing that is not only cosmetic: an unrepaired "self - verifying"
-# looks exactly like a " - Publisher" tail, so the tail regex used to swallow the
-# rest of the headline and starve deduplication and the relevance gate.
+# Some feeds pad punctuation with spaces ("Siemens , Nvidia advance self -
+# verifying workflows"). Repairing that is not only cosmetic: an unrepaired
+# "self - verifying" looks exactly like a " - Publisher" tail, so the tail regex
+# would swallow the rest of the headline and starve dedup and the relevance gate.
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.;:!?%)\]])")
 _SPACE_AFTER_OPEN = re.compile(r"([(\[])\s+")
 _SPACED_APOSTROPHE = re.compile(r"\s+(['’])\s*(?=[a-z])")
@@ -79,7 +70,7 @@ _INTRAWORD_HYPHEN = re.compile(r"(?<=[a-z])\s+-\s+(?=[a-z])")
 
 
 def tidy_title(title: str) -> str:
-    """Repair GDELT's spaced-out punctuation, preserving the original wording."""
+    """Repair spaced-out punctuation, preserving the original wording."""
     cleaned = " ".join((title or "").split())
     cleaned = _INTRAWORD_HYPHEN.sub("-", cleaned)
     cleaned = _SPACED_APOSTROPHE.sub(r"\1", cleaned)
@@ -100,10 +91,24 @@ def _significant_tokens(normalized_title: str) -> frozenset:
 
 
 def _parse_seendate(value: str) -> Optional[datetime]:
-    try:
-        return datetime.strptime(value, _GDELT_TIMESTAMP).replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
+    """Parse Tavily's `published_date`. It is not a fixed format in practice —
+    ISO-8601 with or without a timezone, and sometimes an RFC 2822 date — so try
+    the plausible shapes rather than assuming one."""
+    raw = (value or "").strip()
+    if not raw:
         return None
+
+    iso = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+    if parsed is None:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _is_well_formed(article: dict) -> bool:
@@ -166,8 +171,8 @@ def _company_tokens(company: str) -> frozenset:
 
 
 def _mentions_company(article: dict, company: str) -> bool:
-    """GDELT searches article bodies, so plenty of hits never name the company
-    in the headline. Require the headline itself to carry the company."""
+    """Full-text search matches article bodies, so plenty of hits never name the
+    company in the headline. Require the headline itself to carry it."""
     normalized = normalize_title(article.get("title") or "")
     phrase = normalize_title(company)
     if phrase and phrase in normalized:
@@ -177,22 +182,6 @@ def _mentions_company(article: dict, company: str) -> bool:
     return matched * 2 >= len(tokens)
 
 
-def _is_rate_limited(body: str) -> bool:
-    """GDELT throttles with a plain-text notice under HTTP 200."""
-    return "limit requests" in body[:400].lower()
-
-
-# GDELT also throttles with a real HTTP 429, which clears on its own and so is
-# worth a retry. Every other error status stays fail-fast: a 4xx means the
-# request itself is wrong, and a 5xx is not ours to wait out.
-_RETRYABLE_STATUS = frozenset({429})
-
-_RATE_LIMIT_MESSAGE = (
-    "The news service is rate-limiting requests right now. "
-    "Please wait a few seconds and try again."
-)
-
-
 def _retry_after_seconds(response: httpx.Response, ceiling: float) -> Optional[float]:
     """Read RFC 9110 `Retry-After`, in either delta-seconds or HTTP-date form.
 
@@ -200,8 +189,8 @@ def _retry_after_seconds(response: httpx.Response, ceiling: float) -> Optional[f
     alone, so an explicit header always wins. It is still clamped: an absurd or
     hostile value must not hold a request open indefinitely.
 
-    GDELT does not currently send this header on its 429s, but honouring it is
-    the correct default for any rate-limited upstream.
+    Tavily sends this header on its 429s, so it is the primary signal rather
+    than a defensive nicety.
     """
     raw = (response.headers.get("Retry-After") or "").strip()
     if not raw:
@@ -226,21 +215,45 @@ def _retry_after_seconds(response: httpx.Response, ceiling: float) -> Optional[f
     return max(0.0, min(seconds, ceiling))
 
 
-async def _get_body(
+# Tavily rate-limits and overloads with statuses that clear on their own. A
+# 401/403 is a bad key and will never clear, so it fails fast.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_AUTH_STATUS = frozenset({401, 403})
+
+
+def build_search_body(company: str, lookback_days: int, settings: Settings) -> dict:
+    """Tavily request body. `topic="news"` is what makes `published_date` appear."""
+    today = datetime.now(timezone.utc).date()
+    return {
+        "query": company,
+        "topic": "news",
+        "search_depth": settings.tavily_search_depth,
+        "max_results": settings.tavily_max_results,
+        "start_date": (today - timedelta(days=lookback_days)).isoformat(),
+        "end_date": today.isoformat(),
+    }
+
+
+async def _post_search(
     client: httpx.AsyncClient,
     settings: Settings,
-    params: dict,
+    body: dict,
     timeout: httpx.Timeout,
-) -> str:
-    response = await client.get(settings.gdelt_base_url, params=params, timeout=timeout)
+) -> dict:
+    response = await client.post(
+        settings.tavily_base_url,
+        json=body,
+        headers={"Authorization": f"Bearer {settings.tavily_api_key}"},
+        timeout=timeout,
+    )
     response.raise_for_status()
-    return response.text.strip()
+    return response.json()
 
 
-# GDELT allows one request every five seconds per IP. Retrying a 429 only
-# reacts to a violation we already committed; this gate prevents it. Every
-# outbound GDELT call — first attempts and retries alike — passes through here,
-# so concurrent searches queue instead of racing each other into a 429.
+# Tavily allows 100 requests/minute on the free tier. Retrying a 429 only reacts
+# to a violation already committed; this gate prevents it. Every outbound call —
+# first attempts and retries alike — passes through here, so concurrent searches
+# queue instead of racing each other past the ceiling.
 _rate_gate: Optional[asyncio.Lock] = None
 _rate_gate_loop = None
 # None means "no call yet". Not 0.0: time.monotonic()'s zero point is arbitrary
@@ -253,10 +266,9 @@ def _gate() -> asyncio.Lock:
     """Return a lock bound to the *running* loop.
 
     A module-level `asyncio.Lock()` binds to whichever loop exists at import
-    time, which on Python 3.9 is not the loop uvicorn later runs on — using it
-    raises "got Future attached to a different loop". Creating it lazily, and
-    recreating it if the loop changes, keeps it correct in both the server and
-    the test suite.
+    time, which is not the loop uvicorn later runs on — using it raises "got
+    Future attached to a different loop". Creating it lazily, and recreating it
+    if the loop changes, keeps it correct in both the server and the tests.
     """
     global _rate_gate, _rate_gate_loop
     loop = asyncio.get_event_loop()
@@ -275,85 +287,112 @@ def reset_rate_gate() -> None:
     _rate_gate_loop = None
 
 
-async def _spaced_get(
+async def _spaced_post(
     client: httpx.AsyncClient,
     settings: Settings,
-    params: dict,
+    body: dict,
     timeout: httpx.Timeout,
-) -> str:
+) -> dict:
     global _last_call_at
     async with _gate():
         if _last_call_at is not None:
-            wait = settings.gdelt_min_interval_seconds - (time.monotonic() - _last_call_at)
+            wait = settings.tavily_min_interval_seconds - (time.monotonic() - _last_call_at)
             if wait > 0:
-                logger.debug("Holding GDELT request %.1fs to respect the rate limit", wait)
+                logger.debug("Holding Tavily request %.2fs to respect the rate limit", wait)
                 await asyncio.sleep(wait)
         try:
-            return await _get_body(client, settings, params, timeout)
+            return await _post_search(client, settings, body, timeout)
         finally:
             # Record even on failure: a rejected request still spent the slot.
             _last_call_at = time.monotonic()
 
 
-async def _fetch_body_with_backoff(
+def _is_quota_exhausted(response: httpx.Response) -> bool:
+    """A 429 means either "too fast" (retry) or "out of credits" (do not)."""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    haystack = " ".join(
+        str(payload.get(field, "")) for field in ("code", "error", "detail", "message")
+    ).lower()
+    return "quota" in haystack or "credit" in haystack
+
+
+async def _search_with_backoff(
     client: httpx.AsyncClient,
     settings: Settings,
-    params: dict,
+    body: dict,
     timeout: httpx.Timeout,
-) -> str:
-    """GDELT throttles at the connection, status and response level, so retry
-    transport failures, 429/5xx statuses and plain-text throttle notices a
-    bounded number of times."""
-    delays = [*settings.gdelt_retry_delays, None]
-    throttled = False
+) -> dict:
+    """One retry for transient failures, honouring `Retry-After` when sent."""
+    delays = [*settings.tavily_retry_delays, None]
     for delay in delays:
         try:
-            body = await _spaced_get(client, settings, params, timeout)
-            if not _is_rate_limited(body):
-                return body
-            throttled = True
-            reason = "throttle notice"
+            return await _spaced_post(client, settings, body, timeout)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            logger.warning("GDELT returned HTTP %s", status)
-            if status not in _RETRYABLE_STATUS:
+            logger.warning("Tavily returned HTTP %s", status)
+            if status in _AUTH_STATUS:
+                raise NewsConfigError(
+                    "The news service rejected the API key. Check TAVILY_API_KEY on the server."
+                ) from exc
+            if status == 429 and _is_quota_exhausted(exc.response):
+                raise NewsQuotaExceededError() from exc
+            if status not in _RETRYABLE_STATUS or delay is None:
                 raise NewsUnavailableError() from exc
-            throttled = True
-            if delay is None:
-                raise NewsUnavailableError(_RATE_LIMIT_MESSAGE) from exc
             # An explicit Retry-After overrides our own schedule.
-            requested = _retry_after_seconds(exc.response, settings.gdelt_max_retry_delay)
+            requested = _retry_after_seconds(exc.response, settings.tavily_max_retry_delay)
             if requested is not None:
                 delay = requested
             reason = f"HTTP {status}"
         except httpx.HTTPError as exc:
-            logger.warning("GDELT request failed: %s", type(exc).__name__)
+            logger.warning("Tavily request failed: %s", type(exc).__name__)
             if delay is None:
-                # Once GDELT is throttling in earnest it stops answering the
-                # connection at all, so an earlier 429 explains this failure
-                # far better than a generic outage would.
-                raise NewsUnavailableError(
-                    _RATE_LIMIT_MESSAGE if throttled else ""
-                ) from exc
+                raise NewsUnavailableError() from exc
             reason = type(exc).__name__
 
-        if delay is None:
-            return body
-        logger.info("GDELT returned %s; retrying in %ss", reason, delay)
+        logger.info("Tavily returned %s; retrying in %ss", reason, delay)
         await asyncio.sleep(delay)
 
     raise NewsUnavailableError()  # unreachable: the loop always returns or raises
 
 
-# Raw GDELT results, keyed by the two inputs that shape the query. Focus areas
-# only affect ranking, so they are deliberately not part of the key. News moves
+def _normalize_result(result: dict) -> Optional[dict]:
+    """Map a Tavily result onto the internal article shape the pipeline uses.
+
+    Tavily sends no domain, so it is derived from the URL. `content` becomes the
+    snippet — the field GDELT never had, and the reason briefs can now cite more
+    than a headline.
+    """
+    url = (result.get("url") or "").strip()
+    title = (result.get("title") or "").strip()
+    if not url or not title:
+        return None
+
+    host = urlparse(url).netloc.lower()
+    if not host:
+        return None
+
+    snippet = " ".join((result.get("content") or "").split()) or None
+    return {
+        "url": url,
+        "title": title,
+        "seendate": (result.get("published_date") or "").strip(),
+        "domain": host,
+        "snippet": snippet,
+    }
+
+
+# Raw results, keyed by the two inputs that shape the query. Focus areas only
+# affect ranking, so they are deliberately not part of the key. News moves
 # slowly enough that a short reuse window costs nothing in freshness and saves
-# the rate-limit slot entirely on a repeated or shared search.
+# a whole credit on a repeated or shared search.
 _articles_cache: Dict[Tuple[str, int], Tuple[float, List[dict]]] = {}
 
 
 def clear_cache() -> None:
-    """Drop cached GDELT results. For tests, and for a manual cache bust."""
+    """Drop cached results. For tests, and for a manual cache bust."""
     _articles_cache.clear()
 
 
@@ -367,50 +406,40 @@ async def fetch_articles(
     settings: Optional[Settings] = None,
     client: Optional[httpx.AsyncClient] = None,
 ) -> List[dict]:
-    """Fetch raw article metadata from the GDELT DOC 2.0 API."""
+    """Fetch recent news metadata from Tavily, normalised for the pipeline."""
     settings = settings or get_settings()
+    if not settings.tavily_api_key:
+        raise NewsConfigError()
 
     key = _cache_key(company, lookback_days)
     cached = _articles_cache.get(key)
     if cached is not None and time.monotonic() < cached[0]:
-        logger.info("Serving %s (%sd) from cache; no GDELT call", company, lookback_days)
+        logger.info("Serving %s (%sd) from cache; no credit spent", company, lookback_days)
         return list(cached[1])
 
-    now = datetime.now(timezone.utc)
-    params = {
-        "query": build_query(company),
-        "mode": "ArtList",
-        "format": "json",
-        "maxrecords": str(settings.gdelt_max_records),
-        "sort": "DateDesc",
-        "startdatetime": (now - timedelta(days=lookback_days)).strftime(_GDELT_WINDOW),
-        "enddatetime": now.strftime(_GDELT_WINDOW),
-    }
-    timeout = httpx.Timeout(settings.gdelt_read_timeout, connect=settings.gdelt_connect_timeout)
+    body = build_search_body(company, lookback_days, settings)
+    timeout = httpx.Timeout(settings.tavily_read_timeout, connect=settings.tavily_connect_timeout)
 
     owns_client = client is None
-    client = client or httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+    client = client or httpx.AsyncClient(timeout=timeout)
     try:
-        body = await _fetch_body_with_backoff(client, settings, params, timeout)
+        payload = await _search_with_backoff(client, settings, body, timeout)
     finally:
         if owns_client:
             await client.aclose()
 
-    if not body:
-        return []
-    if _is_rate_limited(body):
-        raise NewsUnavailableError(_RATE_LIMIT_MESSAGE)
-    try:
-        payload = json.loads(body)
-    except ValueError as exc:
-        # GDELT also answers malformed queries with plain text under HTTP 200.
-        logger.warning("GDELT returned a non-JSON response")
-        raise NewsUnavailableError() from exc
+    raw = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        logger.warning("Tavily response had no results list")
+        raise NewsUnavailableError()
 
-    articles = payload.get("articles") if isinstance(payload, dict) else None
-    result = [a for a in articles if isinstance(a, dict)] if isinstance(articles, list) else []
+    result = [
+        article
+        for article in (_normalize_result(r) for r in raw if isinstance(r, dict))
+        if article is not None
+    ]
 
-    _articles_cache[key] = (time.monotonic() + settings.gdelt_cache_seconds, list(result))
+    _articles_cache[key] = (time.monotonic() + settings.tavily_cache_seconds, list(result))
     return result
 
 
@@ -536,7 +565,7 @@ def to_sources(articles: Sequence[dict]) -> List[Source]:
                 url=article["url"],
                 publisher=_publisher_name(article.get("domain") or ""),
                 published_at=_parse_seendate(article.get("seendate", "")),
-                snippet=None,
+                snippet=article.get("snippet"),
             )
         )
     return sources
