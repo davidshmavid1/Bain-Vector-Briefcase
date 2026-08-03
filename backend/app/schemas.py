@@ -5,7 +5,10 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-LookbackDays = Literal[7, 30, 90]
+# Matches Tavily's own `time_range` parameter values exactly (minus "day",
+# which is too narrow a window for this product) — sent straight through to
+# the search request rather than translated via computed start/end dates.
+TimeRange = Literal["week", "month", "year"]
 Confidence = Literal["low", "medium", "high"]
 
 ALLOWED_FOCUS_AREAS = [
@@ -21,7 +24,7 @@ ALLOWED_FOCUS_AREAS = [
 
 class BriefRequest(BaseModel):
     company: str = Field(..., min_length=2, max_length=120)
-    lookback_days: LookbackDays = 30
+    time_range: TimeRange = "month"
     focus_areas: Optional[List[str]] = Field(default=None, max_length=len(ALLOWED_FOCUS_AREAS))
 
     @field_validator("company")
@@ -85,7 +88,7 @@ class CompanyBrief(BaseModel):
     recommended_questions: List[str] = Field(default_factory=list)
     sources: List[Source] = Field(default_factory=list)
     confidence: Confidence = "low"
-    lookback_days: int = 30
+    time_range: TimeRange = "month"
     is_demo: bool = False
 
 

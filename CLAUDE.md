@@ -38,14 +38,19 @@ entire effect. Don't reach for an automatic backend query trick again without
 new live evidence — the pattern says this needs to be user-supplied, not
 inferred.
 
-**Tavily's `score` field is relevance-to-query-text, not entity identity.**
-It only separates correct from incorrect results *after* the query is already
-disambiguated. With a good descriptor (Schneider + "owner operators"),
-correct results scored 0.68–0.76 and the first wrong one dropped to 0.53–0.56
-— a real, usable gap. With an ambiguous bare query (Gerber), the *best*
-result topped out at 0.33 and was still wrong — no gap to threshold on. Don't
-build score-based filtering as a fix for ambiguity; it's a cleanup step for
-queries that are already good.
+**Tavily's `score` field is relevance-to-query-text, not entity identity —
+but it's a better ambiguity *signal* than first assessed.** Comparing a bad
+query's score *within itself* shows no useful internal gap (true for
+`"Gerber company"`: 0.05–0.33, all wrong, nothing to threshold on). But
+comparing a bad query's ceiling against a good query's floor for the *same*
+target company shows a large, clean gap: bare `"Gerber"` topped out at
+`0.49` (still wrong — top result was even a different real company, Gerber
+Gear); `"Gerber baby food"` bottomed out at `0.64` (10/10 correct). Same
+pattern for Schneider: wrong-entity ceiling `0.56`, correct-entity floor
+`0.68`. A threshold around `0.6` fits every data point gathered so far. Not
+yet validated beyond two companies — see `TODO.md` before hardcoding a
+default. Use this to *detect* an ambiguous query early (before spending a
+Gemini call), not just to clean up results from an already-good one.
 
 **`get_settings()` is `@lru_cache`d.** Editing `.env` on a running process
 does nothing until the process is fully killed and restarted — no

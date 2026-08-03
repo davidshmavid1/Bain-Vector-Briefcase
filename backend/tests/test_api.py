@@ -44,9 +44,9 @@ def test_health_reports_status(client):
         {"company": ""},
         {"company": "A"},
         {"company": "x" * 200},
-        {"company": "Acme", "lookback_days": 15},
-        {"company": "Acme", "lookback_days": 0},
-        {"company": "Acme", "lookback_days": "thirty"},
+        {"company": "Acme", "time_range": "day"},  # deliberately excluded, too narrow
+        {"company": "Acme", "time_range": "decade"},
+        {"company": "Acme", "time_range": 30},
         {"company": "Acme", "focus_areas": ["astrology"]},
     ],
 )
@@ -57,16 +57,16 @@ def test_invalid_requests_return_422(client, payload):
     assert response.json()["detail"]
 
 
-@pytest.mark.parametrize("lookback", [7, 30, 90])
+@pytest.mark.parametrize("time_range", ["week", "month", "year"])
 @respx.mock
-def test_supported_lookbacks_are_accepted(client, settings, monkeypatch, fake_gemini, analysis, lookback):
+def test_supported_time_ranges_are_accepted(client, settings, monkeypatch, fake_gemini, analysis, time_range):
     respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=news_payload()))
     fake_gemini(monkeypatch, parsed=analysis)
 
-    response = client.post("/api/v1/brief", json={"company": "Acme Corp", "lookback_days": lookback})
+    response = client.post("/api/v1/brief", json={"company": "Acme Corp", "time_range": time_range})
 
     assert response.status_code == 200
-    assert response.json()["lookback_days"] == lookback
+    assert response.json()["time_range"] == time_range
 
 
 def test_company_name_is_trimmed_and_focus_areas_normalized(
@@ -97,7 +97,7 @@ def test_successful_brief_response(client, settings, monkeypatch, fake_gemini, a
 
     response = client.post(
         "/api/v1/brief",
-        json={"company": "Acme Corp", "lookback_days": 30, "focus_areas": ["strategy"]},
+        json={"company": "Acme Corp", "time_range": "month", "focus_areas": ["strategy"]},
     )
 
     assert response.status_code == 200

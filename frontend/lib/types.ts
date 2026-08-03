@@ -1,11 +1,13 @@
 export type Confidence = "low" | "medium" | "high";
 
-export type LookbackDays = 7 | 30 | 90;
+// Matches Tavily's own time_range values exactly (minus "day", too narrow a
+// window for this product) — sent straight through, no client-side date math.
+export type TimeRange = "week" | "month" | "year";
 
-export const LOOKBACK_OPTIONS: { value: LookbackDays; label: string }[] = [
-  { value: 7, label: "7 days" },
-  { value: 30, label: "30 days" },
-  { value: 90, label: "90 days" },
+export const TIME_RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+  { value: "year", label: "Year" },
 ];
 
 export const FOCUS_AREAS = [
@@ -22,7 +24,7 @@ export type FocusArea = (typeof FOCUS_AREAS)[number]["value"];
 
 export interface BriefRequest {
   company: string;
-  lookback_days: LookbackDays;
+  time_range: TimeRange;
   focus_areas?: FocusArea[];
 }
 
@@ -60,6 +62,6 @@ export interface CompanyBrief {
   recommended_questions: string[];
   sources: Source[];
   confidence: Confidence;
-  lookback_days: number;
+  time_range: TimeRange;
   is_demo: boolean;
 }

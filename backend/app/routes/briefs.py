@@ -29,12 +29,12 @@ async def create_brief(
     settings: Settings = Depends(get_settings),
 ) -> CompanyBrief:
     if settings.demo_mode:
-        return build_demo_brief(request.company, request.lookback_days)
+        return build_demo_brief(request.company, request.time_range)
 
     try:
         sources = await news_service.collect_sources(
             company=request.company,
-            lookback_days=request.lookback_days,
+            time_range=request.time_range,
             focus_areas=request.focus_areas,
             settings=settings,
         )
@@ -43,7 +43,7 @@ async def create_brief(
 
         analysis = await analysis_service.analyze(
             company=request.company,
-            lookback_days=request.lookback_days,
+            time_range=request.time_range,
             sources=sources,
             focus_areas=request.focus_areas,
             settings=settings,
@@ -62,6 +62,6 @@ async def create_brief(
         recommended_questions=analysis.recommended_questions,
         sources=sources,
         confidence=analysis.confidence,
-        lookback_days=request.lookback_days,
+        time_range=request.time_range,
         is_demo=False,
     )
