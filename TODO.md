@@ -5,30 +5,51 @@ pending the user's input, not work in progress.
 
 ## Awaiting decision: entity-disambiguation follow-up
 
-Two live tests confirmed a user-supplied descriptor (e.g. "owner operators",
-"Baby Food") fixes ambiguous company names where an automatic query trick
-failed (see `CLAUDE.md`). A third test confirmed Tavily's relevance `score`
-only usefully separates correct from incorrect results once the query is
-already disambiguated — it's a cleanup step, not a fix on its own.
+Four live tests so far (see `CLAUDE.md`). Confirmed: a user-supplied
+descriptor (e.g. "owner operators", "Baby Food") fixes ambiguous company
+names where an automatic query trick failed. Also confirmed, correcting an
+earlier, more pessimistic read of the same data: comparing a bad query's
+score *ceiling* against a good query's score *floor* for the same target
+shows a large, clean gap —
 
-Presented as a three-way choice, not yet answered:
+| Query | Score range | Entity match |
+| --- | --- | --- |
+| `"Gerber"` (bare) | `0.18–0.49` | 0/10 |
+| `"Gerber baby food"` | `0.64–0.85` | 10/10 |
+| `"schneider owner operators"` | correct `0.68–0.76`, wrong `0.56` | 2/3 |
 
-1. **Optional disambiguation-hint field** — a small input next to the search
-   bar; if filled, appended to the query verbatim (`company + " " + hint`,
-   no label prefix — the "Company:" label was tested and shown to make no
-   difference). Touches `BriefRequest` (backend schema), `build_search_body`
-   / cache key (`news_service.py` — the hint changes the actual query, so it
-   must be part of the cache key), and the frontend form + types.
-2. **Tavily score threshold** — capture `score` in `_normalize_result()`
-   (currently dropped), add a `tavily_min_score` setting, drop results below
-   it before dedupe/ranking ever sees them.
-3. **Both together** — the combination the evidence actually supports: hint
-   fixes the ambiguous case, threshold cleans up stragglers on an
-   already-good query (e.g. Schneider Electric still appeared at position 3
-   even with the "owner operators" descriptor).
+— i.e. score is a better ambiguity *signal* than first thought, just not yet
+validated beyond two companies.
 
-Do not implement any of these without asking which one(s) — this was
-deliberately left open, not forgotten.
+**Not yet decided — user is gathering more score data before committing to a
+number:** the actual `tavily_min_score` threshold value. 0.6 fits all data
+collected so far with margin on both sides, but that's two companies' worth
+of evidence. **Do not hardcode or ship a default threshold without asking —
+this is explicitly still pending, not settled.**
+
+**Decided, once a threshold exists:** what happens when too few sources clear
+it — a new `AmbiguousResultsError` (mirrors `NewsConfigError` /
+`NewsQuotaExceededError` in `errors.py`), distinct from `NoArticlesFoundError`
+because coverage does exist here, it's just about the wrong entity. Skips the
+Gemini call entirely (real cost savings — a low-score result set was always
+going to produce a low-confidence brief nobody trusts). Copy should point
+straight at the same refinement-descriptor guidance already shipped in
+`confidence-badge.tsx`'s `refinementSuggestion()`, e.g.:
+
+> "The results for 'Gerber' look like they're about a different company,
+> person, or product with the same name. Try adding an industry or product
+> descriptor — e.g. 'Gerber Baby Food' instead of just 'Gerber'."
+
+Still open, independent of the threshold question: whether to *also* build
+the optional disambiguation-hint input (small field next to the search bar;
+if filled, appended to the query verbatim — the `"Company:"` label prefix was
+tested and shown to make no measurable difference, so don't reintroduce it).
+That would touch `BriefRequest`, `build_search_body` / the cache key in
+`news_service.py` (the hint changes the actual query, so it must be part of
+the cache key), and the frontend form + types.
+
+Do not implement any of this without asking — deliberately left open, not
+forgotten.
 
 ## Housekeeping
 
