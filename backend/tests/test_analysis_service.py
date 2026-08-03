@@ -1,12 +1,12 @@
 import pytest
 
-from app.schemas import AnalysisDevelopment, AnalysisInsight, BriefAnalysis
+from app.schemas import AnalysisDevelopment, AnalysisInsight, BriefAnalysis, SourceEntityMatch
 from app.services import analysis_service
 from app.services.errors import AnalysisConfigError, AnalysisUnavailableError
 
 
 def test_prompt_contains_every_source_id_and_isolates_untrusted_text(sources):
-    prompt = analysis_service.build_prompt("Acme Corp", 30, sources, ["strategy"])
+    prompt = analysis_service.build_prompt("Acme Corp", "month", sources, ["strategy"])
 
     for source in sources:
         assert source.id in prompt
@@ -81,6 +81,106 @@ def test_sanitize_keeps_confidence_when_evidence_is_broad(sources, analysis):
     assert analysis_service.sanitize_analysis(analysis, sources).confidence == "high"
 
 
+# --- entity resolution --------------------------------------------------
+
+
+def test_sanitize_caps_confidence_when_entity_confidence_is_low(sources, analysis):
+    low_entity = analysis.model_copy(
+        update={
+            "target_entity": analysis.target_entity.model_copy(
+                update={"entity_confidence": "low"}
+            )
+        }
+    )
+
+    cleaned = analysis_service.sanitize_analysis(low_entity, sources)
+
+    assert cleaned.confidence == "low"
+
+
+def test_sanitize_forces_low_when_ambiguity_detected(sources, analysis):
+    ambiguous = analysis.model_copy(
+        update={
+            "target_entity": analysis.target_entity.model_copy(
+                update={"ambiguity_detected": True}
+            )
+        }
+    )
+
+    cleaned = analysis_service.sanitize_analysis(ambiguous, sources)
+
+    assert cleaned.confidence == "low"
+
+
+def test_sanitize_forces_low_when_entity_type_unknown(sources, analysis):
+    unresolved = analysis.model_copy(
+        update={
+            "target_entity": analysis.target_entity.model_copy(
+                update={"entity_type": "unknown", "entity_confidence": "high"}
+            )
+        }
+    )
+
+    cleaned = analysis_service.sanitize_analysis(unresolved, sources)
+
+    assert cleaned.confidence == "low"
+
+
+def test_sanitize_drops_citation_to_person_classified_source(sources, analysis):
+    # source-2 is a real, non-hallucinated id — it's just about the wrong entity.
+    reclassified = analysis.model_copy(
+        update={
+            "source_entity_matches": [
+                match.model_copy(update={"classification": "person"})
+                if match.source_id == "source-2"
+                else match
+                for match in analysis.source_entity_matches
+            ]
+        }
+    )
+
+    cleaned = analysis_service.sanitize_analysis(reclassified, sources)
+
+    assert cleaned.developments[0].source_ids == ["source-1"]
+
+
+def test_sanitize_keeps_citation_to_related_company_source(sources, analysis):
+    reclassified = analysis.model_copy(
+        update={
+            "source_entity_matches": [
+                match.model_copy(update={"classification": "related_company"})
+                if match.source_id == "source-2"
+                else match
+                for match in analysis.source_entity_matches
+            ]
+        }
+    )
+
+    cleaned = analysis_service.sanitize_analysis(reclassified, sources)
+
+    assert cleaned.developments[0].source_ids == ["source-1", "source-2"]
+
+
+def test_sanitize_caps_confidence_when_usable_ratio_is_low(sources, analysis):
+    # Only source-1 and source-2 stay usable; 3 of 5 are reclassified away from the
+    # target entity — a thin minority, even though entity/evidence confidence are "high".
+    thin_majority = analysis.model_copy(
+        update={
+            "source_entity_matches": [
+                SourceEntityMatch(source_id="source-1", classification="target_company"),
+                SourceEntityMatch(source_id="source-2", classification="target_company"),
+                SourceEntityMatch(source_id="source-3", classification="different_company"),
+                SourceEntityMatch(source_id="source-4", classification="irrelevant"),
+                SourceEntityMatch(source_id="source-5", classification="person"),
+            ]
+        }
+    )
+
+    cleaned = analysis_service.sanitize_analysis(thin_majority, sources)
+
+    assert cleaned.confidence == "medium"
+
+
 def test_converters_preserve_source_ids(analysis):
     developments = analysis_service.to_developments(analysis.developments)
     risks = analysis_service.to_insights(analysis.risks)
@@ -94,7 +194,7 @@ async def test_missing_api_key_raises_config_error(settings, sources):
     unconfigured = settings.model_copy(update={"gemini_api_key": ""})
 
     with pytest.raises(AnalysisConfigError):
-        await analysis_service.analyze("Acme Corp", 30, sources, settings=unconfigured)
+        await analysis_service.analyze("Acme Corp", "month", sources, settings=unconfigured)
 
 
 @pytest.mark.asyncio
@@ -104,7 +204,7 @@ async def test_gemini_failure_is_wrapped_without_leaking_details(
     fake_gemini(monkeypatch, side_effect=RuntimeError("500 INTERNAL: key=AIzaSecretValue"))
 
     with pytest.raises(AnalysisUnavailableError) as exc:
-        await analysis_service.analyze("Acme Corp", 30, sources, settings=settings)
+        await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
 
     assert "AIzaSecretValue" not in str(exc.value)
     assert "temporarily unavailable" in str(exc.value)
@@ -117,14 +217,14 @@ async def test_unparseable_output_raises_analysis_unavailable(
     fake_gemini(monkeypatch, parsed=None, text="not json at all")
 
     with pytest.raises(AnalysisUnavailableError):
-        await analysis_service.analyze("Acme Corp", 30, sources, settings=settings)
+        await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
 
 
 @pytest.mark.asyncio
 async def test_analyze_makes_exactly_one_model_call(settings, sources, monkeypatch, fake_gemini, analysis):
     recorder = fake_gemini(monkeypatch, parsed=analysis)
 
-    result = await analysis_service.analyze("Acme Corp", 30, sources, settings=settings)
+    result = await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
 
     assert len(recorder.calls) == 1
     assert isinstance(result, BriefAnalysis)
@@ -135,7 +235,7 @@ async def test_analyze_makes_exactly_one_model_call(settings, sources, monkeypat
 async def test_analyze_falls_back_to_json_text(settings, sources, monkeypatch, fake_gemini, analysis):
     fake_gemini(monkeypatch, parsed=None, text=analysis.model_dump_json())
 
-    result = await analysis_service.analyze("Acme Corp", 30, sources, settings=settings)
+    result = await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
 
     assert result.developments[0].title == "Stronger quarterly results"
 
@@ -164,7 +264,7 @@ async def test_analyze_sanitizes_model_output(settings, sources, monkeypatch, fa
     )
     fake_gemini(monkeypatch, parsed=hallucinated)
 
-    result = await analysis_service.analyze("Acme Corp", 30, sources, settings=settings)
+    result = await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
 
     assert result.opportunities == []
     assert result.developments[0].source_ids == ["source-2"]
@@ -205,7 +305,7 @@ async def test_overloaded_model_is_retried_then_succeeds(
     monkeypatch.setattr(analysis_service.asyncio, "sleep", _no_sleep)
     recorder = fake_gemini(monkeypatch, parsed=analysis, side_effects=[_ApiError(503, "overloaded")])
 
-    result = await analysis_service.analyze("Acme Corp", 30, sources, settings=settings)
+    result = await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
 
     assert len(recorder.calls) == 2
     assert result.executive_summary == analysis.executive_summary
@@ -217,7 +317,7 @@ async def test_persistent_overload_fails_cleanly(settings, sources, monkeypatch,
     recorder = fake_gemini(monkeypatch, side_effect=_ApiError(503, "overloaded"))
 
     with pytest.raises(AnalysisUnavailableError) as exc:
-        await analysis_service.analyze("Acme Corp", 30, sources, settings=settings)
+        await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
 
     assert len(recorder.calls) == 2  # one attempt + one retry
     assert "overloaded" not in str(exc.value)
@@ -229,7 +329,7 @@ async def test_bad_request_is_not_retried(settings, sources, monkeypatch, fake_g
     recorder = fake_gemini(monkeypatch, side_effect=_ApiError(400, "bad model id"))
 
     with pytest.raises(AnalysisUnavailableError):
-        await analysis_service.analyze("Acme Corp", 30, sources, settings=settings)
+        await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
 
     assert len(recorder.calls) == 1
 

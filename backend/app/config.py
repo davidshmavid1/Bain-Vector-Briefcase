@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     tavily_base_url: str = "https://api.tavily.com/search"
     # `basic` costs 1 credit per search, `advanced` costs 2. The free tier is
     # 1,000 credits a month, so the default keeps the full search budget.
-    tavily_search_depth: SearchDepth = "basic"
+    tavily_search_depth: SearchDepth = "advanced"
     # 20 is the API maximum. Over-fetching is free — the cost is per search,
     # not per result — and gives deduplication and ranking more to work with.
     tavily_max_results: int = 20

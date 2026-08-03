@@ -11,6 +11,13 @@ from pydantic import BaseModel, Field, field_validator
 TimeRange = Literal["week", "month", "year"]
 Confidence = Literal["low", "medium", "high"]
 
+# Every retrieved source is classified against the entity Gemini resolves the
+# query to. Only "target_company"/"related_company" sources may ground any
+# insight — see sanitize_analysis() in analysis_service.py.
+SourceEntityClassification = Literal[
+    "target_company", "related_company", "person", "different_company", "ambiguous", "irrelevant"
+]
+
 ALLOWED_FOCUS_AREAS = [
     "technology",
     "operations",
@@ -111,13 +118,35 @@ class AnalysisInsight(BaseModel):
     source_ids: List[str]
 
 
+class TargetEntity(BaseModel):
+    name: str
+    entity_type: Literal["company", "unknown"]
+    # "" sentinel when not applicable/unknown — no Optional, matches the flat,
+    # fully-required convention the structured-output schema converter prefers.
+    parent_company: str
+    industry: str
+    entity_confidence: Confidence
+    ambiguity_detected: bool
+
+
+class SourceEntityMatch(BaseModel):
+    source_id: str
+    classification: SourceEntityClassification
+
+
 class BriefAnalysis(BaseModel):
+    # Resolved first, per the prompt's entity-resolution rule — hence first here too.
+    target_entity: TargetEntity
+    source_entity_matches: List[SourceEntityMatch]
     executive_summary: str
     developments: List[AnalysisDevelopment]
     risks: List[AnalysisInsight]
     opportunities: List[AnalysisInsight]
     talking_points: List[str]
     recommended_questions: List[str]
+    # Evidence strength ASSUMING target_entity is correct — NOT the final blended
+    # confidence. sanitize_analysis() combines this with entity_confidence/
+    # ambiguity_detected to produce the confidence actually shown to users.
     confidence: Confidence
 
 

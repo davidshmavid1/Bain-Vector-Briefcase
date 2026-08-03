@@ -39,6 +39,13 @@ export function BriefReport({ brief, onNewSearch }: BriefReportProps) {
     brief.talking_points.length > 0 ||
     brief.recommended_questions.length > 0;
 
+  // Low confidence means the entity resolution itself is in doubt — showing
+  // "10 sources" and a development built from mismatched-entity coverage would
+  // read as more authoritative than the brief actually is. The executive
+  // summary plus the refinement hint above already tell the user what to do
+  // next; everything else stays hidden until they narrow the query.
+  const showEvidence = brief.confidence !== "low";
+
   return (
     <article className="space-y-8">
       <header className="space-y-5 border-b border-border pb-6">
@@ -84,97 +91,104 @@ export function BriefReport({ brief, onNewSearch }: BriefReportProps) {
         )}
       </Section>
 
-      {brief.developments.length > 0 && (
-        <Section title="Recent developments" icon={<Newspaper aria-hidden="true" className="h-4 w-4" />}>
-          <ol className="space-y-4">
-            {brief.developments.map((development, index) => (
-              <li key={`${development.title}-${index}`}>
-                <Card>
-                  <CardHeader className="gap-2">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <CardTitle>{development.title}</CardTitle>
-                      {development.date && (
-                        <span className="text-xs text-muted-foreground">{development.date}</span>
-                      )}
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <p className="text-sm leading-relaxed text-foreground">{development.summary}</p>
-                    <p className="border-l-2 border-primary/40 pl-3 text-sm leading-relaxed text-muted-foreground">
-                      <span className="font-medium text-foreground">Why it matters: </span>
-                      {development.why_it_matters}
-                    </p>
-                    <SourceRefs ids={development.source_ids} positionById={positionById} />
-                  </CardContent>
-                </Card>
-              </li>
-            ))}
-          </ol>
-        </Section>
+      {showEvidence && (
+        <>
+          {brief.developments.length > 0 && (
+            <Section title="Recent developments" icon={<Newspaper aria-hidden="true" className="h-4 w-4" />}>
+              <ol className="space-y-4">
+                {brief.developments.map((development, index) => (
+                  <li key={`${development.title}-${index}`}>
+                    <Card>
+                      <CardHeader className="gap-2">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                          <CardTitle>{development.title}</CardTitle>
+                          {development.date && (
+                            <span className="text-xs text-muted-foreground">{development.date}</span>
+                          )}
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <p className="text-sm leading-relaxed text-foreground">{development.summary}</p>
+                        <p className="border-l-2 border-primary/40 pl-3 text-sm leading-relaxed text-muted-foreground">
+                          <span className="font-medium text-foreground">Why it matters: </span>
+                          {development.why_it_matters}
+                        </p>
+                        <SourceRefs ids={development.source_ids} positionById={positionById} />
+                      </CardContent>
+                    </Card>
+                  </li>
+                ))}
+              </ol>
+            </Section>
+          )}
+
+          {(brief.risks.length > 0 || brief.opportunities.length > 0) && (
+            <div className="grid gap-8 lg:grid-cols-2">
+              <InsightSection
+                title="Risks"
+                icon={<AlertTriangle aria-hidden="true" className="h-4 w-4 text-caution" />}
+                items={brief.risks}
+                positionById={positionById}
+                emptyLabel="No evidence-backed risks surfaced in this coverage window."
+              />
+              <InsightSection
+                title="Opportunities"
+                icon={<TrendingUp aria-hidden="true" className="h-4 w-4 text-positive" />}
+                items={brief.opportunities}
+                positionById={positionById}
+                emptyLabel="No evidence-backed opportunities surfaced in this coverage window."
+              />
+            </div>
+          )}
+
+          {brief.talking_points.length > 0 && (
+            <Section title="Talking points" icon={<Quote aria-hidden="true" className="h-4 w-4" />}>
+              <ul className="space-y-3">
+                {brief.talking_points.map((point, index) => (
+                  <li key={index} className="flex gap-3 text-sm leading-relaxed">
+                    <span
+                      aria-hidden="true"
+                      className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
+                    />
+                    {point}
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
+
+          {brief.recommended_questions.length > 0 && (
+            <Section
+              title="Recommended client questions"
+              icon={<MessageSquareQuote aria-hidden="true" className="h-4 w-4" />}
+            >
+              <ol className="space-y-3">
+                {brief.recommended_questions.map((question, index) => (
+                  <li key={index} className="flex gap-3 text-sm leading-relaxed">
+                    <span className="w-5 shrink-0 font-mono text-xs text-muted-foreground">
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
+                    {question}
+                  </li>
+                ))}
+              </ol>
+            </Section>
+          )}
+
+          {!hasBody && (
+            <Card>
+              <CardContent className="p-6 text-sm text-muted-foreground">
+                The retrieved coverage was too thin to support specific findings. Try a longer
+                timeframe or a more precise company name.
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
 
-      {(brief.risks.length > 0 || brief.opportunities.length > 0) && (
-        <div className="grid gap-8 lg:grid-cols-2">
-          <InsightSection
-            title="Risks"
-            icon={<AlertTriangle aria-hidden="true" className="h-4 w-4 text-caution" />}
-            items={brief.risks}
-            positionById={positionById}
-            emptyLabel="No evidence-backed risks surfaced in this coverage window."
-          />
-          <InsightSection
-            title="Opportunities"
-            icon={<TrendingUp aria-hidden="true" className="h-4 w-4 text-positive" />}
-            items={brief.opportunities}
-            positionById={positionById}
-            emptyLabel="No evidence-backed opportunities surfaced in this coverage window."
-          />
-        </div>
-      )}
-
-      {brief.talking_points.length > 0 && (
-        <Section title="Talking points" icon={<Quote aria-hidden="true" className="h-4 w-4" />}>
-          <ul className="space-y-3">
-            {brief.talking_points.map((point, index) => (
-              <li key={index} className="flex gap-3 text-sm leading-relaxed">
-                <span
-                  aria-hidden="true"
-                  className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
-                />
-                {point}
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
-
-      {brief.recommended_questions.length > 0 && (
-        <Section
-          title="Recommended client questions"
-          icon={<MessageSquareQuote aria-hidden="true" className="h-4 w-4" />}
-        >
-          <ol className="space-y-3">
-            {brief.recommended_questions.map((question, index) => (
-              <li key={index} className="flex gap-3 text-sm leading-relaxed">
-                <span className="w-5 shrink-0 font-mono text-xs text-muted-foreground">
-                  {String(index + 1).padStart(2, "0")}
-                </span>
-                {question}
-              </li>
-            ))}
-          </ol>
-        </Section>
-      )}
-
-      {!hasBody && (
-        <Card>
-          <CardContent className="p-6 text-sm text-muted-foreground">
-            The retrieved coverage was too thin to support specific findings. Try a longer timeframe
-            or a more precise company name.
-          </CardContent>
-        </Card>
-      )}
-
+      {/* Shown even at low confidence, unlike the model-authored sections above —
+          letting the user inspect the raw sources themselves is strictly better
+          than hiding everything behind one confidence label. */}
       <Section title={`Sources (${brief.sources.length})`}>
         <ol className="space-y-3">
           {brief.sources.map((source, index) => (

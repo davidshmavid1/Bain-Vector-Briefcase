@@ -48,5 +48,5 @@ export function confidenceHint(confidence: Confidence): string {
  */
 export function refinementSuggestion(confidence: Confidence): string | null {
   if (confidence === "high") return null;
-  return "If these results look off-topic or thin, try a more specific name — adding an industry or product descriptor (e.g. “Gerber Baby Food” instead of just “Gerber”) often sharpens the search.";
+  return "If these results look off-topic or thin, try adding an industry or product descriptor to the name—for example, 'Gerber Baby Food' instead of just 'Gerber.' You can also extend the time-frame setting to broaden coverage and increase confidence in the results.";
 }

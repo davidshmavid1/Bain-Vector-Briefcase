@@ -29,6 +29,60 @@ You are a research analyst preparing a pre-meeting brief for a management \
 consulting partner. You write with the precision of an investment memo: \
 concrete, specific, and free of filler.
 
+WHAT WE DO - Core Services:
+Strategy Consulting: Helps companies define long-term goals, growth plans, competitive positioning, \
+and market entry. \
+Private Equity Advisory: Provides commercial due diligence and helps investment funds boost the \
+financial and operational value of their portfolio companies.
+Performance Improvement: Re-engineers supply chains, cuts structural costs, and improves profit margins.\
+Digital and AI Integration: Deploys advanced data analytics and enterprise artificial intelligence \
+solutions through partnerships like their collaboration with OpenAI.
+
+PRIMARY RULE — ENTITY RESOLUTION (resolve this first, before writing anything else):
+This product researches companies for consulting-prep briefs. It does not research people, \
+unrelated brands that merely share a name, or subsidiaries/divisions unless the brief is explicitly \
+about the parent-subsidiary relationship.
+
+1. Before writing any analysis, decide what single company the query most plausibly refers to, \
+using ONLY the sources provided below as evidence. Do not rely on outside/prior knowledge to assume \
+a company you have not seen support for in these sources.
+
+2. Populate target_entity:
+   - name: the specific company you resolved to (may be more specific than the raw query, e.g. \
+"Gerber Products Company" instead of "Gerber").
+   - entity_type: "company" if you can confidently name one company; "unknown" if the sources are \
+split across multiple unrelated entities and you cannot pick one in good faith.
+   - parent_company / industry: fill in if stated in the sources, else "" (empty string — never \
+"unknown" or "N/A").
+   - entity_confidence: your honest belief that you resolved to the ONE company the user meant. \
+"low" if sources are genuinely split between multiple unrelated entities sharing the name, "medium" \
+if you had to infer past real noise, "high" only if sources are overwhelmingly and unambiguously \
+about one company.
+   - ambiguity_detected: true if two or more sources are clearly about different, unrelated \
+real-world entities (e.g. a company and a person, or two unrelated companies) sharing the query name \
+or a close variant. Set this independently of entity_confidence — flag ambiguity even if you still \
+lean toward one entity, whenever you saw meaningfully conflicting sources.
+
+3. For EVERY source listed below, add exactly one entry to source_entity_matches, same source_id, \
+same order, classifying its relationship to the target_entity you just resolved:
+   - "target_company": clearly about the resolved target entity's own business.
+   - "related_company": about a parent, subsidiary, or explicitly-stated business partner/affiliate \
+of the target entity. Only use this if the source text itself states the corporate relationship — \
+never infer one from name similarity alone.
+   - "person": primarily about an individual (a celebrity, founder, executive as a person) rather \
+than the company's business.
+   - "different_company": a different, unrelated company that happens to share the name or a similar \
+name.
+   - "irrelevant": not meaningfully about any company.
+   - "ambiguous": you genuinely cannot tell which entity the source is about.
+   Do not classify a source as "target_company" or "related_company" just because it contains the \
+query string — confirm from the snippet that it is actually about the resolved company's business.
+
+Only sources classified "target_company" or "related_company" may support any development, risk, \
+opportunity, or talking point. Never cite a "person", "different_company", "ambiguous", or \
+"irrelevant" source as evidence, even if it is the only source available for a claim — omit the claim \
+instead.
+
 Hard rules:
 - Use ONLY the numbered sources supplied in the user message. You have no other knowledge of \
 recent events at this company.
@@ -49,9 +103,19 @@ unmarked must be directly supported by a cited source.
 unacceptable. Every line must be specific to this company and this evidence.
 - Recommended questions must be open-ended, grounded in the cited coverage, and phrased so a \
 partner could ask them out loud in a client meeting.
-- Set confidence to "high" only when several independent publishers corroborate a clear picture, \
-"medium" for partial or single-publisher coverage, and "low" when the coverage is thin, tangential \
-or ambiguous.
+- CONFIDENCE (evidence quality only — not entity resolution, not your own prose confidence): \
+confidence describes ONLY how strong and how broad the evidentiary support is for the developments, \
+risks, and opportunities you wrote, ASSUMING the entity resolution above is correct. It is not a \
+blended/overall confidence and it is not your confidence in your own writing or in the entity match — \
+that lives separately in target_entity.entity_confidence and target_entity.ambiguity_detected, and \
+will be combined with this value mechanically after you respond.
+    - "high": multiple independent target_company/related_company sources corroborate the same facts.
+    - "medium": some corroboration, but thinner or from fewer sources.
+    - "low": sparse, single-sourced, or largely unconfirmed.
+  Rate entity_confidence and ambiguity_detected honestly and independently of how doing so affects \
+the perceived usefulness of the brief. Do not inflate either signal to make the brief look more \
+complete or more usable — a brief honestly rated low/ambiguous is more valuable than one that looks \
+confident but is about the wrong company.
 """
 
 
@@ -100,29 +164,71 @@ def _valid_ids(raw_ids: Sequence[str], allowed: set) -> List[str]:
     return seen
 
 
+_USABLE_ENTITY_CLASSES = frozenset({"target_company", "related_company"})
+_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+_CONFIDENCE_LABELS = ["low", "medium", "high"]  # index by rank to invert
+
+# Deterministic backstop, not a data-fit — same spirit as the "fewer than 4
+# sources" rule it replaces (also never empirically tuned).
+_MIN_USABLE_SOURCES_FOR_HIGH = 4
+_MIN_USABLE_RATIO_FOR_HIGH = 0.7  # "a strong majority" per the entity-resolution spec
+
+
 def sanitize_analysis(analysis: BriefAnalysis, sources: Sequence[Source]) -> BriefAnalysis:
-    """Drop hallucinated source references, and any item left without evidence."""
+    """Drop hallucinated or wrong-entity source references, and cap confidence by
+    how confidently the entity was resolved — never trust the model's own blended
+    self-rating, since "confident prose" and "the right company" are different claims.
+    """
     allowed = {source.id for source in sources}
+    # Additive, not subtractive: a source Gemini never classified — or classified as
+    # person/different_company/irrelevant/ambiguous — is simply absent here. No extra
+    # "unclassified" case needed.
+    usable = {
+        match.source_id
+        for match in analysis.source_entity_matches
+        if match.classification in _USABLE_ENTITY_CLASSES and match.source_id in allowed
+    }
 
     developments: List[AnalysisDevelopment] = []
     for item in analysis.developments:
-        ids = _valid_ids(item.source_ids, allowed)
+        ids = _valid_ids(item.source_ids, usable)
         if ids:
             developments.append(item.model_copy(update={"source_ids": ids}))
 
     def keep_insights(items: Sequence[AnalysisInsight]) -> List[AnalysisInsight]:
         kept: List[AnalysisInsight] = []
         for item in items:
-            ids = _valid_ids(item.source_ids, allowed)
+            ids = _valid_ids(item.source_ids, usable)
             if ids:
                 kept.append(item.model_copy(update={"source_ids": ids}))
         return kept
 
-    confidence = analysis.confidence
-    if len(sources) < 4 and confidence == "high":
-        confidence = "medium"
+    entity = analysis.target_entity
+    # Intentional: ANY entity_confidence value caps the ceiling, not just low/ambiguous —
+    # an honestly-"medium" entity match withholds "high" even with broad, clean evidence.
+    ceiling = _CONFIDENCE_RANK[entity.entity_confidence]
+    if entity.entity_type == "unknown" or entity.ambiguity_detected:
+        ceiling = _CONFIDENCE_RANK["low"]
+
+    ratio = (len(usable) / len(sources)) if sources else 0.0
+    if len(usable) < _MIN_USABLE_SOURCES_FOR_HIGH or ratio < _MIN_USABLE_RATIO_FOR_HIGH:
+        ceiling = min(ceiling, _CONFIDENCE_RANK["medium"])
+
+    confidence = _CONFIDENCE_LABELS[min(_CONFIDENCE_RANK[analysis.confidence], ceiling)]
     if not developments:
         confidence = "low"
+
+    logger.info(
+        "entity resolution: type=%s entity_confidence=%s ambiguity=%s evidence_confidence=%s "
+        "usable=%d/%d final=%s",
+        entity.entity_type,
+        entity.entity_confidence,
+        entity.ambiguity_detected,
+        analysis.confidence,
+        len(usable),
+        len(sources),
+        confidence,
+    )
 
     return analysis.model_copy(
         update={
