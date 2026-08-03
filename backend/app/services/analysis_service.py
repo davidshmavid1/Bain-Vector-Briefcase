@@ -204,14 +204,22 @@ def sanitize_analysis(analysis: BriefAnalysis, sources: Sequence[Source]) -> Bri
         return kept
 
     entity = analysis.target_entity
+    ratio = (len(usable) / len(sources)) if sources else 0.0
+    thin_evidence = len(usable) < _MIN_USABLE_SOURCES_FOR_HIGH or ratio < _MIN_USABLE_RATIO_FOR_HIGH
+
     # Intentional: ANY entity_confidence value caps the ceiling, not just low/ambiguous —
     # an honestly-"medium" entity match withholds "high" even with broad, clean evidence.
     ceiling = _CONFIDENCE_RANK[entity.entity_confidence]
-    if entity.entity_type == "unknown" or entity.ambiguity_detected:
+    if entity.entity_type == "unknown":
+        # Cannot be reliably determined at all — always low.
         ceiling = _CONFIDENCE_RANK["low"]
-
-    ratio = (len(usable) / len(sources)) if sources else 0.0
-    if len(usable) < _MIN_USABLE_SOURCES_FOR_HIGH or ratio < _MIN_USABLE_RATIO_FOR_HIGH:
+    elif entity.ambiguity_detected:
+        # "Some ambiguity remains" (medium) vs. "substantial mixture, few sources
+        # confidently connected" (low) — distinguished by how much usable evidence
+        # actually survived, not by the flag alone. A couple of stray mismatched
+        # sources next to a strong majority is the former, not the latter.
+        ceiling = _CONFIDENCE_RANK["low"] if thin_evidence else min(ceiling, _CONFIDENCE_RANK["medium"])
+    elif thin_evidence:
         ceiling = min(ceiling, _CONFIDENCE_RANK["medium"])
 
     confidence = _CONFIDENCE_LABELS[min(_CONFIDENCE_RANK[analysis.confidence], ceiling)]

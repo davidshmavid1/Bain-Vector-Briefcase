@@ -98,7 +98,11 @@ def test_sanitize_caps_confidence_when_entity_confidence_is_low(sources, analysi
     assert cleaned.confidence == "low"
 
 
-def test_sanitize_forces_low_when_ambiguity_detected(sources, analysis):
+def test_sanitize_caps_confidence_at_medium_when_ambiguity_detected_with_strong_evidence(
+    sources, analysis
+):
+    # A couple of stray mismatched sources next to an otherwise-strong majority is
+    # "some ambiguity remains" (medium), not "cannot be reliably determined" (low).
     ambiguous = analysis.model_copy(
         update={
             "target_entity": analysis.target_entity.model_copy(
@@ -108,6 +112,29 @@ def test_sanitize_forces_low_when_ambiguity_detected(sources, analysis):
     )
 
     cleaned = analysis_service.sanitize_analysis(ambiguous, sources)
+
+    assert cleaned.confidence == "medium"
+
+
+def test_sanitize_forces_low_when_ambiguity_detected_with_thin_evidence(sources, analysis):
+    # Ambiguity flagged AND only a minority of sources are usable — the "substantial
+    # mixture, few sources confidently connected" case — still forces low.
+    thin_and_ambiguous = analysis.model_copy(
+        update={
+            "target_entity": analysis.target_entity.model_copy(
+                update={"ambiguity_detected": True}
+            ),
+            "source_entity_matches": [
+                SourceEntityMatch(source_id="source-1", classification="target_company"),
+                SourceEntityMatch(source_id="source-2", classification="target_company"),
+                SourceEntityMatch(source_id="source-3", classification="different_company"),
+                SourceEntityMatch(source_id="source-4", classification="irrelevant"),
+                SourceEntityMatch(source_id="source-5", classification="person"),
+            ],
+        }
+    )
+
+    cleaned = analysis_service.sanitize_analysis(thin_and_ambiguous, sources)
 
     assert cleaned.confidence == "low"
 
