@@ -14,7 +14,7 @@ from tests.conftest import make_article, tavily_payload
 def test_search_body_targets_news_and_the_requested_window(settings):
     body = news_service.build_search_body("Acme Corp", "month", settings)
 
-    assert body["query"] == "Acme Corp"
+    assert body["query"] == "Latest news about the company Acme Corp"
     # topic=news is what makes Tavily return published_date at all.
     assert body["topic"] == "news"
     assert body["search_depth"] == settings.tavily_search_depth
@@ -23,6 +23,16 @@ def test_search_body_targets_news_and_the_requested_window(settings):
     assert body["time_range"] == "month"
     assert "start_date" not in body
     assert "end_date" not in body
+
+
+def test_search_body_folds_focus_areas_into_the_query(settings):
+    body = news_service.build_search_body(
+        "Acme Corp", "month", settings, focus_areas=["strategy", "finance"]
+    )
+
+    assert body["query"] == (
+        "Latest news about the company Acme Corp. Focus specifically on: strategy, finance"
+    )
 
 
 def test_normalize_title_strips_publisher_tail_and_punctuation():

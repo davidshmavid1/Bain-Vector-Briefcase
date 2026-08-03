@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 app = FastAPI(
-    title="Company Intelligence API",
+    title="Bain Vector Briefcase API",
     description="Turns recent news coverage into a client-preparation brief.",
     version="1.0.0",
 )

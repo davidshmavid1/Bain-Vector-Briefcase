@@ -1,4 +1,4 @@
-# Company Intelligence
+# Bain Vector Briefcase
 
 Enter a company name, get a partner-ready client-preparation brief built from recent news
 coverage — what happened, why it matters, the risks and opportunities it opens, the talking points

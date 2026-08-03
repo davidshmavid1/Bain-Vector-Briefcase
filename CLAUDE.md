@@ -1,4 +1,4 @@
-# Company Intelligence — persistent project memory
+# Bain Vector Briefcase — persistent project memory
 
 Read this at the start of every session in this repo. It exists so hard-won
 context survives compaction and doesn't have to be re-derived. See `TODO.md`

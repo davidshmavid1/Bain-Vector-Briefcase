@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Company Intelligence — Client preparation briefs",
+  title: "Bain Vector Briefcase — Client preparation briefs",
   description:
     "Turn recent news coverage into a partner-ready client preparation brief, with every finding tied back to its sources.",
 };
