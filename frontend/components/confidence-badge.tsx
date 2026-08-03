@@ -40,3 +40,13 @@ export function ConfidenceBadge({ confidence }: { confidence: Confidence }) {
 export function confidenceHint(confidence: Confidence): string {
   return CONFIDENCE_META[confidence].hint;
 }
+
+/**
+ * A more specific company name gives Tavily's search something to lock onto —
+ * a bare surname like "Gerber" is genuinely ambiguous, but "Gerber Baby Food"
+ * resolves cleanly. Only worth surfacing once confidence is already in doubt.
+ */
+export function refinementSuggestion(confidence: Confidence): string | null {
+  if (confidence === "high") return null;
+  return "If these results look off-topic or thin, try a more specific name — adding an industry or product descriptor (e.g. “Gerber Baby Food” instead of just “Gerber”) often sharpens the search.";
+}
