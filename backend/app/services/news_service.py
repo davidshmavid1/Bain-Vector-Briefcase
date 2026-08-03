@@ -227,14 +227,27 @@ _AUTH_STATUS = frozenset({401, 403})
 TIME_RANGE_DAYS = {"week": 7, "month": 30, "year": 365}
 
 
-def build_search_body(company: str, time_range: str, settings: Settings) -> dict:
-    """Tavily request body. `topic="news"` is what makes `published_date` appear.
+def build_search_body(
+    company: str,
+    time_range: str,
+    settings: Settings,
+    focus_areas: Optional[Sequence[str]] = None,
+) -> dict:
+    """Build a single Tavily request body."""
+    query = f"Latest news about the company {company}"
 
-    `time_range` is Tavily's own parameter — sent through as-is rather than
-    translated into computed start/end dates.
-    """
+    cleaned_focus_areas = [
+        area.strip()
+        for area in focus_areas or []
+        if area.strip()
+    ]
+
+    if cleaned_focus_areas:
+        focus_query = ", ".join(cleaned_focus_areas)
+        query += f". Focus specifically on: {focus_query}"
+
     return {
-        "query": company,
+        "query": query,
         "topic": "news",
         "search_depth": settings.tavily_search_depth,
         "max_results": settings.tavily_max_results,
@@ -413,6 +426,7 @@ async def fetch_articles(
     time_range: str,
     settings: Optional[Settings] = None,
     client: Optional[httpx.AsyncClient] = None,
+    focus_areas: Optional[Sequence[str]] = None,
 ) -> List[dict]:
     """Fetch recent news metadata from Tavily, normalised for the pipeline."""
     settings = settings or get_settings()
@@ -425,7 +439,7 @@ async def fetch_articles(
         logger.info("Serving %s (%s) from cache; no credit spent", company, time_range)
         return list(cached[1])
 
-    body = build_search_body(company, time_range, settings)
+    body = build_search_body(company, time_range, settings, focus_areas)
     timeout = httpx.Timeout(settings.tavily_read_timeout, connect=settings.tavily_connect_timeout)
 
     owns_client = client is None
@@ -588,7 +602,7 @@ async def collect_sources(
 ) -> List[Source]:
     """Full retrieval pipeline: fetch -> filter -> dedupe -> rank -> ids."""
     settings = settings or get_settings()
-    raw = await fetch_articles(company, time_range, settings=settings, client=client)
+    raw = await fetch_articles(company, time_range, settings=settings, client=client, focus_areas=focus_areas)
 
     well_formed = [a for a in raw if _is_well_formed(a)]
     on_topic = [a for a in well_formed if _mentions_company(a, company)]

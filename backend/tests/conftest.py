@@ -4,7 +4,14 @@ from typing import List, Optional
 import pytest
 
 from app.config import Settings
-from app.schemas import AnalysisDevelopment, AnalysisInsight, BriefAnalysis, Source
+from app.schemas import (
+    AnalysisDevelopment,
+    AnalysisInsight,
+    BriefAnalysis,
+    Source,
+    SourceEntityMatch,
+    TargetEntity,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -150,6 +157,18 @@ def sources() -> List[Source]:
 @pytest.fixture
 def analysis() -> BriefAnalysis:
     return BriefAnalysis(
+        target_entity=TargetEntity(
+            name="Acme Corp",
+            entity_type="company",
+            parent_company="",
+            industry="",
+            entity_confidence="high",
+            ambiguity_detected=False,
+        ),
+        source_entity_matches=[
+            SourceEntityMatch(source_id=f"source-{i}", classification="target_company")
+            for i in range(1, 6)
+        ],
         executive_summary="Acme Corp reported stronger quarterly results and opened a new plant.",
         developments=[
             AnalysisDevelopment(
