@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ExternalLink,
   FlaskConical,
+  Lightbulb,
   MessageSquareQuote,
   Newspaper,
   Quote,
@@ -14,7 +15,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ConfidenceBadge, confidenceHint } from "@/components/confidence-badge";
+import { ConfidenceBadge, confidenceHint, refinementSuggestion } from "@/components/confidence-badge";
 import { CopyBriefButton } from "@/components/copy-brief-button";
 import { formatDate, formatTimestamp } from "@/lib/format";
 import type { CompanyBrief, Insight, Source } from "@/lib/types";
@@ -75,6 +76,12 @@ export function BriefReport({ brief, onNewSearch }: BriefReportProps) {
       <Section title="Executive summary">
         <p className="text-lg leading-relaxed text-foreground">{brief.executive_summary}</p>
         <p className="mt-3 text-sm text-muted-foreground">{confidenceHint(brief.confidence)}</p>
+        {refinementSuggestion(brief.confidence) && (
+          <p className="mt-3 flex items-start gap-2 rounded-md border border-border bg-soft px-3 py-2 text-sm text-primary">
+            <Lightbulb aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{refinementSuggestion(brief.confidence)}</span>
+          </p>
+        )}
       </Section>
 
       {brief.developments.length > 0 && (
