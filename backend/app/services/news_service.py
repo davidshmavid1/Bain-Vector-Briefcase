@@ -222,10 +222,18 @@ _AUTH_STATUS = frozenset({401, 403})
 
 
 def build_search_body(company: str, lookback_days: int, settings: Settings) -> dict:
-    """Tavily request body. `topic="news"` is what makes `published_date` appear."""
+    """Tavily request body. `topic="news"` is what makes `published_date` appear.
+
+    "company" is appended to the query text itself, not just used as metadata:
+    a bare name like "Gerber" is genuinely ambiguous between the company and
+    people who share the surname (e.g. Kaia Gerber), and Tavily's search is
+    semantic rather than exact-phrase, so this extra word measurably shifts
+    ranking toward the business entity without any new API parameter — Tavily
+    has no entity-type filter to reach for instead.
+    """
     today = datetime.now(timezone.utc).date()
     return {
-        "query": company,
+        "query": f"{company} company",
         "topic": "news",
         "search_depth": settings.tavily_search_depth,
         "max_results": settings.tavily_max_results,
@@ -373,7 +381,7 @@ def _normalize_result(result: dict) -> Optional[dict]:
     host = urlparse(url).netloc.lower()
     if not host:
         return None
-
+#go over snippet
     snippet = " ".join((result.get("content") or "").split()) or None
     return {
         "url": url,

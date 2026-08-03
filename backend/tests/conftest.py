@@ -25,7 +25,7 @@ def isolate_news_service_state():
 def settings() -> Settings:
     return Settings(
         gemini_api_key="test-key",
-        gemini_model="gemini-2.5-flash",
+        gemini_model="gemini-3.6-flash",
         allowed_origins="http://localhost:3000",
         demo_mode=False,
         tavily_api_key="tvly-test-key",

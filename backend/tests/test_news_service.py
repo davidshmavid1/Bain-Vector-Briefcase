@@ -14,7 +14,10 @@ from tests.conftest import make_article, tavily_payload
 def test_search_body_targets_news_and_the_requested_window(settings):
     body = news_service.build_search_body("Acme Corp", 30, settings)
 
-    assert body["query"] == "Acme Corp"
+    # "company" is appended to disambiguate names shared with people or other
+    # entities (e.g. "Gerber" the baby-products company vs. Kaia Gerber) —
+    # Tavily's search is semantic, so this shifts ranking with no new param.
+    assert body["query"] == "Acme Corp company"
     # topic=news is what makes Tavily return published_date at all.
     assert body["topic"] == "news"
     assert body["search_depth"] == settings.tavily_search_depth

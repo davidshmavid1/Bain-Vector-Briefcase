@@ -129,8 +129,11 @@ API keys are never included in a response.
 ## How a brief is produced
 
 1. **Retrieve** — one Tavily `topic="news"` search scoped to the lookback window via
-   `start_date`/`end_date`. Only metadata is used: headline, excerpt, publisher domain, timestamp
-   and URL. Full article bodies are never fetched or scraped.
+   `start_date`/`end_date`. The query is the company name with "company" appended (e.g. "Gerber
+   company"), which measurably steers Tavily's semantic search away from unrelated people or
+   entities sharing the name — Tavily has no entity-type filter to reach for instead. Only metadata
+   is used: headline, excerpt, publisher domain, timestamp and URL. Full article bodies are never
+   fetched or scraped.
 2. **Filter** — malformed records are dropped, and because full-text search matches article
    *bodies*, headlines that never name the company are dropped too. That gate relaxes automatically
    if it would leave too little to work with.
