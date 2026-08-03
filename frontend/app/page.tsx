@@ -13,7 +13,7 @@ import type { CompanyBrief } from "@/lib/types";
 const HIGHLIGHTS = [
   {
     title: "Recent coverage only",
-    body: "Headlines from the last 7, 30 or 90 days, deduplicated and ranked before any analysis runs.",
+    body: "Headlines from the last Week, Month or Year, deduplicated and ranked before any analysis runs.",
   },
   {
     title: "Sourced, not invented",
@@ -97,7 +97,7 @@ export default function HomePage() {
     <div className="mx-auto w-full max-w-4xl px-5 py-12 sm:px-8 sm:py-16">
       <header className="space-y-5">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-          Company intelligence
+          Bain Vector Briefcase
         </p>
         <h1 className="text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl">
           Walk into every client meeting already briefed.
