@@ -7,13 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { FOCUS_AREAS, LOOKBACK_OPTIONS, type FocusArea, type LookbackDays } from "@/lib/types";
+import { FOCUS_AREAS, TIME_RANGE_OPTIONS, type FocusArea, type TimeRange } from "@/lib/types";
 
 const EXAMPLE_COMPANIES = ["Microsoft", "Siemens", "Unilever", "Rivian", "Maersk"];
 
 export interface BriefFormValues {
   company: string;
-  lookbackDays: LookbackDays;
+  timeRange: TimeRange;
   focusAreas: FocusArea[];
 }
 
@@ -31,7 +31,7 @@ export function BriefForm({
   variant = "hero",
 }: BriefFormProps) {
   const [company, setCompany] = React.useState("");
-  const [lookbackDays, setLookbackDays] = React.useState<LookbackDays>(30);
+  const [timeRange, setTimeRange] = React.useState<TimeRange>("month");
   const [focusAreas, setFocusAreas] = React.useState<FocusArea[]>([]);
   const [touched, setTouched] = React.useState(false);
 
@@ -50,7 +50,7 @@ export function BriefForm({
       setTouched(true);
       return;
     }
-    onSubmit({ company: value, lookbackDays, focusAreas });
+    onSubmit({ company: value, timeRange, focusAreas });
   };
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -129,15 +129,15 @@ export function BriefForm({
               aria-labelledby="timeframe-label"
               className="inline-flex rounded-md border border-input bg-card p-1"
             >
-              {LOOKBACK_OPTIONS.map((option) => {
-                const selected = option.value === lookbackDays;
+              {TIME_RANGE_OPTIONS.map((option) => {
+                const selected = option.value === timeRange;
                 return (
                   <button
                     key={option.value}
                     type="button"
                     role="radio"
                     aria-checked={selected}
-                    onClick={() => setLookbackDays(option.value)}
+                    onClick={() => setTimeRange(option.value)}
                     className={cn(
                       "rounded-sm px-4 py-1.5 text-sm font-medium transition-colors",
                       selected

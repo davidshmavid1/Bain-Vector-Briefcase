@@ -12,7 +12,7 @@ from ..schemas import CompanyBrief, Development, Insight, Source
 DEMO_NOTICE = "SAMPLE BRIEF (demo mode) — illustrative content, not live news coverage."
 
 
-def build_demo_brief(company: str, lookback_days: int) -> CompanyBrief:
+def build_demo_brief(company: str, time_range: str) -> CompanyBrief:
     now = datetime.now(timezone.utc)
     sources = [
         Source(
@@ -90,6 +90,6 @@ def build_demo_brief(company: str, lookback_days: int) -> CompanyBrief:
         ],
         sources=sources,
         confidence="low",
-        lookback_days=lookback_days,
+        time_range=time_range,
         is_demo=True,
     )

@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
@@ -221,16 +221,24 @@ _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _AUTH_STATUS = frozenset({401, 403})
 
 
-def build_search_body(company: str, lookback_days: int, settings: Settings) -> dict:
-    """Tavily request body. `topic="news"` is what makes `published_date` appear."""
-    today = datetime.now(timezone.utc).date()
+# Our own recency scoring (score_article/rank_articles below) needs a plain
+# day-count, but Tavily's time_range is a string — this mapping exists only to
+# feed that formula and is never sent to Tavily itself.
+TIME_RANGE_DAYS = {"week": 7, "month": 30, "year": 365}
+
+
+def build_search_body(company: str, time_range: str, settings: Settings) -> dict:
+    """Tavily request body. `topic="news"` is what makes `published_date` appear.
+
+    `time_range` is Tavily's own parameter — sent through as-is rather than
+    translated into computed start/end dates.
+    """
     return {
         "query": company,
         "topic": "news",
         "search_depth": settings.tavily_search_depth,
         "max_results": settings.tavily_max_results,
-        "start_date": (today - timedelta(days=lookback_days)).isoformat(),
-        "end_date": today.isoformat(),
+        "time_range": time_range,
     }
 
 
@@ -388,7 +396,7 @@ def _normalize_result(result: dict) -> Optional[dict]:
 # affect ranking, so they are deliberately not part of the key. News moves
 # slowly enough that a short reuse window costs nothing in freshness and saves
 # a whole credit on a repeated or shared search.
-_articles_cache: Dict[Tuple[str, int], Tuple[float, List[dict]]] = {}
+_articles_cache: Dict[Tuple[str, str], Tuple[float, List[dict]]] = {}
 
 
 def clear_cache() -> None:
@@ -396,13 +404,13 @@ def clear_cache() -> None:
     _articles_cache.clear()
 
 
-def _cache_key(company: str, lookback_days: int) -> Tuple[str, int]:
-    return (" ".join(company.lower().split()), lookback_days)
+def _cache_key(company: str, time_range: str) -> Tuple[str, str]:
+    return (" ".join(company.lower().split()), time_range)
 
 
 async def fetch_articles(
     company: str,
-    lookback_days: int,
+    time_range: str,
     settings: Optional[Settings] = None,
     client: Optional[httpx.AsyncClient] = None,
 ) -> List[dict]:
@@ -411,13 +419,13 @@ async def fetch_articles(
     if not settings.tavily_api_key:
         raise NewsConfigError()
 
-    key = _cache_key(company, lookback_days)
+    key = _cache_key(company, time_range)
     cached = _articles_cache.get(key)
     if cached is not None and time.monotonic() < cached[0]:
-        logger.info("Serving %s (%sd) from cache; no credit spent", company, lookback_days)
+        logger.info("Serving %s (%s) from cache; no credit spent", company, time_range)
         return list(cached[1])
 
-    body = build_search_body(company, lookback_days, settings)
+    body = build_search_body(company, time_range, settings)
     timeout = httpx.Timeout(settings.tavily_read_timeout, connect=settings.tavily_connect_timeout)
 
     owns_client = client is None
@@ -573,14 +581,14 @@ def to_sources(articles: Sequence[dict]) -> List[Source]:
 
 async def collect_sources(
     company: str,
-    lookback_days: int,
+    time_range: str,
     focus_areas: Optional[Sequence[str]] = None,
     settings: Optional[Settings] = None,
     client: Optional[httpx.AsyncClient] = None,
 ) -> List[Source]:
     """Full retrieval pipeline: fetch -> filter -> dedupe -> rank -> ids."""
     settings = settings or get_settings()
-    raw = await fetch_articles(company, lookback_days, settings=settings, client=client)
+    raw = await fetch_articles(company, time_range, settings=settings, client=client)
 
     well_formed = [a for a in raw if _is_well_formed(a)]
     on_topic = [a for a in well_formed if _mentions_company(a, company)]
@@ -588,6 +596,8 @@ async def collect_sources(
     candidates = on_topic if len(on_topic) >= settings.min_sources else well_formed
 
     unique = deduplicate(candidates)
-    ranked = rank_articles(unique, company, lookback_days, focus_areas)
+    # score_article/rank_articles score recency against a day-count, not a
+    # time_range string — TIME_RANGE_DAYS is the (internal-only) bridge.
+    ranked = rank_articles(unique, company, TIME_RANGE_DAYS[time_range], focus_areas)
     varied = _limit_per_publisher(ranked)
     return to_sources(varied[: settings.max_sources])

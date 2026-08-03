@@ -32,6 +32,7 @@ __pycache__/
 # Tooling
 .vercel
 coverage/
+.CLAUDE.md
 
 # Misc
 .DS_Store

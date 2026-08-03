@@ -56,7 +56,7 @@ export function BriefReport({ brief, onNewSearch }: BriefReportProps) {
             </p>
             <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">{brief.company}</h2>
             <p className="text-sm text-muted-foreground">
-              Generated {formatTimestamp(brief.generated_at)} · Last {brief.lookback_days} days ·{" "}
+              Generated {formatTimestamp(brief.generated_at)} · Last {brief.time_range} ·{" "}
               {brief.sources.length} {brief.sources.length === 1 ? "source" : "sources"}
             </p>
           </div>

@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
 import httpx
@@ -12,15 +12,17 @@ from tests.conftest import make_article, tavily_payload
 
 
 def test_search_body_targets_news_and_the_requested_window(settings):
-    body = news_service.build_search_body("Acme Corp", 30, settings)
+    body = news_service.build_search_body("Acme Corp", "month", settings)
 
     assert body["query"] == "Acme Corp"
     # topic=news is what makes Tavily return published_date at all.
     assert body["topic"] == "news"
     assert body["search_depth"] == settings.tavily_search_depth
-    start = date.fromisoformat(body["start_date"])
-    end = date.fromisoformat(body["end_date"])
-    assert (end - start).days == 30
+    # time_range is Tavily's own parameter, sent through as-is — no more
+    # computed start_date/end_date.
+    assert body["time_range"] == "month"
+    assert "start_date" not in body
+    assert "end_date" not in body
 
 
 def test_normalize_title_strips_publisher_tail_and_punctuation():
@@ -247,7 +249,7 @@ TAVILY_URL = "https://api.tavily.com/search"
 async def test_collect_sources_happy_path(settings):
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(8)))
 
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    sources = await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert len(sources) == 8
     assert [s.id for s in sources] == [f"source-{i}" for i in range(1, 9)]
@@ -267,23 +269,21 @@ async def test_configured_search_depth_reaches_the_request(settings):
     deep = settings.model_copy(update={"tavily_search_depth": "advanced"})
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(5)))
 
-    await news_service.collect_sources("Acme Corp", 30, settings=deep)
+    await news_service.collect_sources("Acme Corp", "month", settings=deep)
 
     assert json.loads(route.calls.last.request.content)["search_depth"] == "advanced"
 
 
-@pytest.mark.parametrize("lookback", [7, 30, 90])
+@pytest.mark.parametrize("time_range", ["week", "month", "year"])
 @pytest.mark.asyncio
 @respx.mock
-async def test_lookback_window_is_sent_as_dates(settings, lookback):
+async def test_time_range_is_sent_to_tavily(settings, time_range):
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(5)))
 
-    await news_service.collect_sources("Acme Corp", lookback, settings=settings)
+    await news_service.collect_sources("Acme Corp", time_range, settings=settings)
 
     body = json.loads(route.calls.last.request.content)
-    start = date.fromisoformat(body["start_date"])
-    end = date.fromisoformat(body["end_date"])
-    assert (end - start).days == lookback
+    assert body["time_range"] == time_range
 
 
 @pytest.mark.asyncio
@@ -302,7 +302,7 @@ async def test_results_are_normalised_onto_the_internal_shape(settings):
     }
     respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=payload))
 
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    sources = await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     source = sources[0]
     assert source.url == "https://www.reuters.com/business/acme-plant"
@@ -325,7 +325,7 @@ async def test_malformed_results_are_dropped_not_fatal(settings):
     }
     respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=payload))
 
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    sources = await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert len(sources) == 4
 
@@ -335,7 +335,7 @@ async def test_missing_key_fails_before_any_http_call(settings):
     unconfigured = settings.model_copy(update={"tavily_api_key": ""})
 
     with pytest.raises(NewsConfigError) as exc:
-        await news_service.collect_sources("Acme Corp", 30, settings=unconfigured)
+        await news_service.collect_sources("Acme Corp", "month", settings=unconfigured)
 
     assert "TAVILY_API_KEY" in str(exc.value)
 
@@ -345,7 +345,7 @@ async def test_missing_key_fails_before_any_http_call(settings):
 async def test_empty_results_return_no_sources(settings):
     respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json={"results": []}))
 
-    assert await news_service.collect_sources("Nonexistent Co", 7, settings=settings) == []
+    assert await news_service.collect_sources("Nonexistent Co", "week", settings=settings) == []
 
 
 @pytest.mark.asyncio
@@ -354,7 +354,7 @@ async def test_response_without_results_list_is_an_error(settings):
     respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json={"unexpected": True}))
 
     with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+        await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
 
 # --- error mapping --------------------------------------------------------
@@ -367,7 +367,7 @@ async def test_rejected_key_fails_fast_without_retrying(settings, status):
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(status, json={"error": "bad key"}))
 
     with pytest.raises(NewsConfigError):
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+        await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert route.call_count == 1  # waiting will not fix a bad key
 
@@ -380,7 +380,7 @@ async def test_quota_exhaustion_is_reported_distinctly(settings):
     )
 
     with pytest.raises(NewsQuotaExceededError) as exc:
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+        await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert "quota" in str(exc.value).lower()
     assert route.call_count == 1  # a retry cannot conjure credits
@@ -402,7 +402,7 @@ async def test_rate_limit_is_retried_then_succeeds(settings, monkeypatch):
         ]
     )
 
-    sources = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    sources = await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert len(sources) == 5
     assert slept == [4.0]  # the header wins over the configured delay
@@ -417,7 +417,7 @@ async def test_persistent_rate_limiting_raises_news_unavailable(settings, monkey
     )
 
     with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+        await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert route.call_count == 2
 
@@ -433,7 +433,7 @@ async def test_server_error_is_retried(settings, monkeypatch):
         ]
     )
 
-    assert len(await news_service.collect_sources("Acme Corp", 30, settings=settings)) == 5
+    assert len(await news_service.collect_sources("Acme Corp", "month", settings=settings)) == 5
 
 
 @pytest.mark.asyncio
@@ -443,7 +443,7 @@ async def test_client_error_is_not_retried(settings, monkeypatch):
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(400, json={"error": "bad request"}))
 
     with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+        await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert route.call_count == 1
 
@@ -456,7 +456,7 @@ async def test_transient_timeout_is_retried(settings, monkeypatch):
         side_effect=[httpx.ConnectTimeout("slow"), httpx.Response(200, json=tavily_payload(5))]
     )
 
-    assert len(await news_service.collect_sources("Acme Corp", 30, settings=settings)) == 5
+    assert len(await news_service.collect_sources("Acme Corp", "month", settings=settings)) == 5
 
 
 @pytest.mark.asyncio
@@ -466,7 +466,7 @@ async def test_persistent_timeout_raises_news_unavailable(settings, monkeypatch)
     route = respx.post(TAVILY_URL).mock(side_effect=httpx.ConnectTimeout("slow"))
 
     with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+        await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert route.call_count == 2
 
@@ -482,7 +482,7 @@ async def test_the_api_key_never_appears_in_an_error(settings, monkeypatch, stat
     )
 
     with pytest.raises(Exception) as exc:
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+        await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert settings.tavily_api_key not in str(exc.value)
 
@@ -495,8 +495,8 @@ async def test_the_api_key_never_appears_in_an_error(settings, monkeypatch, stat
 async def test_repeat_search_spends_no_credit(settings):
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
 
-    first = await news_service.collect_sources("Acme Corp", 30, settings=settings)
-    second = await news_service.collect_sources("Acme Corp", 30, settings=settings)
+    first = await news_service.collect_sources("Acme Corp", "month", settings=settings)
+    second = await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
     assert route.call_count == 1
     assert [s.url for s in first] == [s.url for s in second]
@@ -507,8 +507,8 @@ async def test_repeat_search_spends_no_credit(settings):
 async def test_cache_key_ignores_case_and_padding(settings):
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
 
-    await news_service.collect_sources("Acme Corp", 30, settings=settings)
-    await news_service.collect_sources("  acme   corp ", 30, settings=settings)
+    await news_service.collect_sources("Acme Corp", "month", settings=settings)
+    await news_service.collect_sources("  acme   corp ", "month", settings=settings)
 
     assert route.call_count == 1
 
@@ -518,8 +518,8 @@ async def test_cache_key_ignores_case_and_padding(settings):
 async def test_a_different_window_is_fetched_separately(settings):
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
 
-    await news_service.collect_sources("Acme Corp", 30, settings=settings)
-    await news_service.collect_sources("Acme Corp", 7, settings=settings)
+    await news_service.collect_sources("Acme Corp", "month", settings=settings)
+    await news_service.collect_sources("Acme Corp", "week", settings=settings)
 
     assert route.call_count == 2
 
@@ -530,8 +530,8 @@ async def test_expired_cache_entry_is_refetched(settings):
     brief_cache = settings.model_copy(update={"tavily_cache_seconds": 0.0})
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
 
-    await news_service.collect_sources("Acme Corp", 30, settings=brief_cache)
-    await news_service.collect_sources("Acme Corp", 30, settings=brief_cache)
+    await news_service.collect_sources("Acme Corp", "month", settings=brief_cache)
+    await news_service.collect_sources("Acme Corp", "month", settings=brief_cache)
 
     assert route.call_count == 2
 
@@ -549,9 +549,9 @@ async def test_failed_search_is_not_cached(settings, monkeypatch):
     )
 
     with pytest.raises(NewsUnavailableError):
-        await news_service.collect_sources("Acme Corp", 30, settings=settings)
+        await news_service.collect_sources("Acme Corp", "month", settings=settings)
 
-    assert len(await news_service.collect_sources("Acme Corp", 30, settings=settings)) == 6
+    assert len(await news_service.collect_sources("Acme Corp", "month", settings=settings)) == 6
 
 
 @pytest.mark.asyncio
@@ -566,7 +566,7 @@ async def test_first_call_is_not_delayed(settings, monkeypatch):
     spaced = settings.model_copy(update={"tavily_min_interval_seconds": 5.0})
     respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(5)))
 
-    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+    await news_service.collect_sources("Acme Corp", "month", settings=spaced)
 
     assert slept == []
 
@@ -585,9 +585,9 @@ async def test_outbound_calls_are_spaced_by_the_minimum_interval(settings, monke
     spaced = settings.model_copy(update={"tavily_min_interval_seconds": 5.0})
     respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(5)))
 
-    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+    await news_service.collect_sources("Acme Corp", "month", settings=spaced)
     news_service.clear_cache()
-    await news_service.collect_sources("Acme Corp", 30, settings=spaced)
+    await news_service.collect_sources("Acme Corp", "month", settings=spaced)
 
     assert len(slept) == 1
     assert 0 < slept[0] <= 5.0
@@ -610,7 +610,7 @@ async def test_concurrent_searches_do_not_race_into_a_burst(settings, monkeypatc
     monkeypatch.setattr(news_service, "_post_search", tracking_post)
 
     await news_service.asyncio.gather(
-        *(news_service.collect_sources(f"Company {i}", 30, settings=settings) for i in range(5))
+        *(news_service.collect_sources(f"Company {i}", "month", settings=settings) for i in range(5))
     )
 
     assert max_in_flight == 1

@@ -44,7 +44,7 @@ export function briefToPlainText(brief: CompanyBrief): string {
 
   lines.push(`CLIENT BRIEF — ${brief.company.toUpperCase()}`);
   lines.push(
-    `Generated ${formatTimestamp(brief.generated_at)} · Last ${brief.lookback_days} days · Confidence: ${brief.confidence}`,
+    `Generated ${formatTimestamp(brief.generated_at)} · Last ${brief.time_range} · Confidence: ${brief.confidence}`,
   );
   if (brief.is_demo) lines.push("DEMO MODE — sample content, not live coverage.");
   lines.push("", "EXECUTIVE SUMMARY", "", brief.executive_summary, "");

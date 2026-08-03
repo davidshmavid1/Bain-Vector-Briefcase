@@ -104,13 +104,14 @@ failed request always surfaces as an error.
 ```json
 {
   "company": "Microsoft",
-  "lookback_days": 30,
+  "time_range": "month",
   "focus_areas": ["technology", "strategy"]
 }
 ```
 
 - `company` — required, 2–120 characters.
-- `lookback_days` — one of `7`, `30`, `90` (default `30`).
+- `time_range` — one of `week`, `month`, `year` (default `month`). Sent straight through to
+  Tavily's own `time_range` parameter — no client-side date math involved.
 - `focus_areas` — optional; any of `technology`, `operations`, `strategy`, `finance`, `people`,
   `regulatory`, `sustainability`.
 

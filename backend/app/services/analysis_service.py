@@ -71,14 +71,14 @@ def _format_sources(sources: Sequence[Source]) -> str:
 
 def build_prompt(
     company: str,
-    lookback_days: int,
+    time_range: str,
     sources: Sequence[Source],
     focus_areas: Optional[Sequence[str]] = None,
 ) -> str:
     focus = ", ".join(focus_areas) if focus_areas else "no specific focus areas — cover what matters most"
     return (
         f"Company: {company}\n"
-        f"Coverage window: the last {lookback_days} days\n"
+        f"Coverage window: the last {time_range}\n"
         f"Partner focus areas: {focus}\n"
         f"Valid source_ids: {', '.join(s.id for s in sources)}\n\n"
         "Below is the retrieved news coverage. Each entry is a headline plus metadata, and usually "
@@ -174,7 +174,7 @@ def _is_transient(exc: Exception) -> bool:
 
 async def analyze(
     company: str,
-    lookback_days: int,
+    time_range: str,
     sources: Sequence[Source],
     focus_areas: Optional[Sequence[str]] = None,
     settings: Optional[Settings] = None,
@@ -200,7 +200,7 @@ async def analyze(
         temperature=0.2,
     )
 
-    contents = build_prompt(company, lookback_days, sources, focus_areas)
+    contents = build_prompt(company, time_range, sources, focus_areas)
     response = None
     for delay in [*settings.gemini_retry_delays, None]:
         try:

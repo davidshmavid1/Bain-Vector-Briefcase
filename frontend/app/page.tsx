@@ -50,7 +50,7 @@ export default function HomePage() {
       const result = await generateBrief(
         {
           company: values.company,
-          lookback_days: values.lookbackDays,
+          time_range: values.timeRange,
           focus_areas: values.focusAreas.length > 0 ? values.focusAreas : undefined,
         },
         controller.signal,
