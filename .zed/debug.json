@@ -6,7 +6,7 @@
     "module": "uvicorn",
     "args": ["app.main:app", "--port", "8000"],
     "cwd": "$ZED_WORKTREE_ROOT/backend",
-    "python": "$ZED_WORKTREE_ROOT/backend/.venv/bin/python",
+    "python": "$ZED_WORKTREE_ROOT/backend/.venv/Scripts/python.exe",
     "justMyCode": false
   }
 ]

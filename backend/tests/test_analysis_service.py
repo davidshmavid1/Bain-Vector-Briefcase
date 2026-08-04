@@ -2,7 +2,7 @@ import pytest
 
 from app.schemas import AnalysisDevelopment, AnalysisInsight, BriefAnalysis, SourceEntityMatch
 from app.services import analysis_service
-from app.services.errors import AnalysisConfigError, AnalysisUnavailableError
+from app.services.errors import AnalysisConfigError, AnalysisUnavailableError, PersonEntityError
 
 
 def test_prompt_contains_every_source_id_and_isolates_untrusted_text(sources):
@@ -153,6 +153,20 @@ def test_sanitize_forces_low_when_entity_type_unknown(sources, analysis):
     assert cleaned.confidence == "low"
 
 
+def test_sanitize_forces_low_when_entity_type_is_person(sources, analysis):
+    resolved_to_a_person = analysis.model_copy(
+        update={
+            "target_entity": analysis.target_entity.model_copy(
+                update={"entity_type": "person", "entity_confidence": "high"}
+            )
+        }
+    )
+
+    cleaned = analysis_service.sanitize_analysis(resolved_to_a_person, sources)
+
+    assert cleaned.confidence == "low"
+
+
 def test_sanitize_drops_citation_to_person_classified_source(sources, analysis):
     # source-2 is a real, non-hallucinated id — it's just about the wrong entity.
     reclassified = analysis.model_copy(
@@ -295,6 +309,79 @@ async def test_analyze_sanitizes_model_output(settings, sources, monkeypatch, fa
 
     assert result.opportunities == []
     assert result.developments[0].source_ids == ["source-2"]
+
+
+# --- person-entity short-circuit -------------------------------------------
+
+
+def test_is_person_entity_true_when_self_reported(sources, analysis):
+    person = analysis.model_copy(
+        update={"target_entity": analysis.target_entity.model_copy(update={"entity_type": "person"})}
+    )
+
+    assert analysis_service._is_person_entity(person, sources)
+
+
+def test_is_person_entity_false_for_a_resolved_company(sources, analysis):
+    assert not analysis_service._is_person_entity(analysis, sources)
+
+
+def test_is_person_entity_true_when_unknown_but_sources_are_dominated_by_person(sources, analysis):
+    # The model hedged to "unknown" rather than committing to "person", but
+    # every source is person-classified and nothing usable survived — the
+    # corroboration should catch this even though entity_type didn't say so.
+    hedged = analysis.model_copy(
+        update={
+            "target_entity": analysis.target_entity.model_copy(update={"entity_type": "unknown"}),
+            "source_entity_matches": [
+                match.model_copy(update={"classification": "person"})
+                for match in analysis.source_entity_matches
+            ],
+        }
+    )
+
+    assert analysis_service._is_person_entity(hedged, sources)
+
+
+def test_is_person_entity_false_when_person_sources_are_a_minority(sources, analysis):
+    # One stray person-classified source next to a strong usable majority is
+    # normal noise, not a person query.
+    mostly_company = analysis.model_copy(
+        update={
+            "source_entity_matches": [
+                match.model_copy(update={"classification": "person"})
+                if match.source_id == "source-5"
+                else match
+                for match in analysis.source_entity_matches
+            ]
+        }
+    )
+
+    assert not analysis_service._is_person_entity(mostly_company, sources)
+
+
+@pytest.mark.asyncio
+async def test_analyze_raises_person_entity_error(settings, sources, monkeypatch, fake_gemini, analysis):
+    person = analysis.model_copy(
+        update={
+            "target_entity": analysis.target_entity.model_copy(update={"entity_type": "person"}),
+        }
+    )
+    fake_gemini(monkeypatch, parsed=person)
+
+    with pytest.raises(PersonEntityError):
+        await analysis_service.analyze("Elon Musk", "month", sources, settings=settings)
+
+
+@pytest.mark.asyncio
+async def test_analyze_does_not_raise_for_a_resolved_company(
+    settings, sources, monkeypatch, fake_gemini, analysis
+):
+    fake_gemini(monkeypatch, parsed=analysis)
+
+    result = await analysis_service.analyze("Acme Corp", "month", sources, settings=settings)
+
+    assert isinstance(result, BriefAnalysis)
 
 
 # --- transient-failure retry ----------------------------------------------

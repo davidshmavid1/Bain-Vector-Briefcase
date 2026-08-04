@@ -75,28 +75,33 @@ failed request always surfaces as an error.
 
 ### `backend/.env`
 
-| Variable | Required | Default | Purpose |
-| --- | --- | --- | --- |
-| `TAVILY_API_KEY` | yes (unless `DEMO_MODE=true`) | — | Tavily search key. Server-side only; never sent to the browser. |
-| `TAVILY_SEARCH_DEPTH` | no | `basic` | `basic` (1 credit/search) or `advanced` (2). |
-| `GEMINI_API_KEY` | yes (unless `DEMO_MODE=true`) | — | Google AI Studio key. Server-side only; never sent to the browser. |
-| `GEMINI_MODEL` | no | `gemini-3.6-flash` | Gemini model id. |
-| `ALLOWED_ORIGINS` | no | `http://localhost:3000` | Comma-separated CORS origins. No wildcard is used. |
-| `ALLOWED_ORIGIN_REGEX` | no | — | Optional anchored regex for origins that cannot be listed literally, e.g. Vercel previews. Empty means unused. |
-| `DEMO_MODE` | no | `false` | Return the bundled sample brief instead of calling Tavily/Gemini. |
+| Variable               | Required                      | Default                 | Purpose                                                                                                        |
+| ---------------------- | ----------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `TAVILY_API_KEY`       | yes (unless `DEMO_MODE=true`) | —                       | Tavily search key. Server-side only; never sent to the browser.                                                |
+| `TAVILY_SEARCH_DEPTH`  | no                            | `basic`                 | `basic` (1 credit/search) or `advanced` (2).                                                                   |
+| `GEMINI_API_KEY`       | yes (unless `DEMO_MODE=true`) | —                       | Google AI Studio key. Server-side only; never sent to the browser.                                             |
+| `GEMINI_MODEL`         | no                            | `gemini-3.6-flash`      | Gemini model id.                                                                                               |
+| `ALLOWED_ORIGINS`      | no                            | `http://localhost:3000` | Comma-separated CORS origins. No wildcard is used.                                                             |
+| `ALLOWED_ORIGIN_REGEX` | no                            | —                       | Optional anchored regex for origins that cannot be listed literally, e.g. Vercel previews. Empty means unused. |
+| `DEMO_MODE`            | no                            | `false`                 | Return the bundled sample brief instead of calling Tavily/Gemini.                                              |
 
 ### `frontend/.env.local`
 
-| Variable | Required | Default | Purpose |
-| --- | --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | no | `http://localhost:8000` | Base URL of the FastAPI backend, no trailing slash. |
+| Variable              | Required | Default                 | Purpose                                             |
+| --------------------- | -------- | ----------------------- | --------------------------------------------------- |
+| `NEXT_PUBLIC_API_URL` | no       | `http://localhost:8000` | Base URL of the FastAPI backend, no trailing slash. |
 
 ## API
 
 ### `GET /health`
 
 ```json
-{ "status": "ok", "demo_mode": false, "analysis_configured": true, "model": "gemini-3.6-flash" }
+{
+  "status": "ok",
+  "demo_mode": false,
+  "analysis_configured": true,
+  "model": "gemini-3.6-flash"
+}
 ```
 
 ### `POST /api/v1/brief`
@@ -117,12 +122,12 @@ failed request always surfaces as an error.
 
 Responses:
 
-| Status | Meaning |
-| --- | --- |
-| `200` | A validated `CompanyBrief`. |
-| `422` | Request validation failed, with per-field detail. |
-| `404` | No usable recent coverage for that company in the window. |
-| `503` | Tavily or Gemini was unavailable, a key is unset or rejected, or the monthly search quota is exhausted. |
+| Status | Meaning                                                                                                 |
+| ------ | ------------------------------------------------------------------------------------------------------- |
+| `200`  | A validated `CompanyBrief`.                                                                             |
+| `422`  | Request validation failed, with per-field detail.                                                       |
+| `404`  | No usable recent coverage for that company in the window.                                               |
+| `503`  | Tavily or Gemini was unavailable, a key is unset or rejected, or the monthly search quota is exhausted. |
 
 Upstream failures return a short, user-facing `detail` string. Stack traces, upstream payloads and
 API keys are never included in a response.
@@ -133,14 +138,14 @@ API keys are never included in a response.
    `start_date`/`end_date`. Only metadata is used: headline, excerpt, publisher domain, timestamp
    and URL. Full article bodies are never fetched or scraped.
 2. **Filter** — malformed records are dropped, and because full-text search matches article
-   *bodies*, headlines that never name the company are dropped too. That gate relaxes automatically
+   _bodies_, headlines that never name the company are dropped too. That gate relaxes automatically
    if it would leave too little to work with.
 3. **Deduplicate** — by URL, by normalised headline (publisher tails like `— Reuters` removed), and
    by token overlap for near-identical rewrites of the same story.
 4. **Rank** — a deterministic score over recency, headline relevance to the company, source quality
    and focus-area match, with at most three headlines per publisher leading the list. No model call
    is involved in ranking. Up to 12 sources get stable `source-1…source-N` ids.
-5. **Analyse** — a *single* Gemini request covering all selected sources, using structured output
+5. **Analyse** — a _single_ Gemini request covering all selected sources, using structured output
    bound to a Pydantic schema. The prompt fences the article text as untrusted data, forbids
    invented events or figures, requires source citations, and requires hypotheses to be labelled.
 6. **Verify** — any `source_ids` the model invents are stripped; an item left with no valid citation
@@ -155,12 +160,12 @@ No amount of client-side care creates capacity that does not exist.
 
 Tavily's free tier binds the quota to the key instead:
 
-| | GDELT keyless | Tavily free |
-| --- | --- | --- |
-| Monthly cap | none | 1,000 searches |
-| Throughput | 12/min, per IP | 100/min, per key |
+|                   | GDELT keyless              | Tavily free           |
+| ----------------- | -------------------------- | --------------------- |
+| Monthly cap       | none                       | 1,000 searches        |
+| Throughput        | 12/min, per IP             | 100/min, per key      |
 | Rate-limit signal | `HTTP 200` + English prose | `429` + `Retry-After` |
-| Article excerpts | none | yes |
+| Article excerpts  | none                       | yes                   |
 
 The excerpts matter most. Under GDELT, `Source.snippet` was always empty and the model reasoned
 from bare headlines. Tavily returns a `content` excerpt per result, which flows through to the
@@ -195,7 +200,7 @@ cd backend && ./.venv/bin/python -m pytest -q && ./.venv/bin/ruff check app test
 
 Lint rules live in `backend/ruff.toml`, which is the project's linter of record — without it each
 editor applies its own defaults and reports findings this project has not opted into. `ruff format`
-is deliberately *not* part of the workflow; the existing layout is hand-tuned.
+is deliberately _not_ part of the workflow; the existing layout is hand-tuned.
 
 ```bash
 cd frontend && npx tsc --noEmit && npm run lint && npm run build
@@ -213,10 +218,10 @@ in an error response.
 
 Production has stable domains, so `ALLOWED_ORIGINS` handles it. Preview deployments do not:
 
-| URL type | Example | Problem |
-| --- | --- | --- |
-| Per-deployment | `…-inqq-ch88ftyv6-…` | a new hash on every push |
-| Branch alias | `…-inqq-git-b-7c4d7c-…` | truncated and hashed |
+| URL type       | Example                 | Problem                  |
+| -------------- | ----------------------- | ------------------------ |
+| Per-deployment | `…-inqq-ch88ftyv6-…`    | a new hash on every push |
+| Branch alias   | `…-inqq-git-b-7c4d7c-…` | truncated and hashed     |
 
 The branch alias looks like the stable answer but is not reliably constructable. A hostname such as
 `bain-vector-briefcase-inqq-git-beta-2-preview-davidshmavid1s-projects` is 69 characters, and DNS

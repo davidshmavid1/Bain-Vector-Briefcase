@@ -120,7 +120,7 @@ class AnalysisInsight(BaseModel):
 
 class TargetEntity(BaseModel):
     name: str
-    entity_type: Literal["company", "unknown"]
+    entity_type: Literal["company", "person", "unknown"]
     # "" sentinel when not applicable/unknown — no Optional, matches the flat,
     # fully-required convention the structured-output schema converter prefers.
     parent_company: str
