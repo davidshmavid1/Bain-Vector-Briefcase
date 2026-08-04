@@ -244,7 +244,7 @@ def build_search_body(
 
     if cleaned_focus_areas:
         focus_query = ", ".join(cleaned_focus_areas)
-        query += f". Focus specifically on: {focus_query}"
+        query += f". Focus specifically on the companies: {focus_query}"
 
     return {
         "query": query,
@@ -405,11 +405,13 @@ def _normalize_result(result: dict) -> Optional[dict]:
     }
 
 
-# Raw results, keyed by the two inputs that shape the query. Focus areas only
-# affect ranking, so they are deliberately not part of the key. News moves
-# slowly enough that a short reuse window costs nothing in freshness and saves
-# a whole credit on a repeated or shared search.
-_articles_cache: Dict[Tuple[str, str], Tuple[float, List[dict]]] = {}
+# Raw results are keyed by every input that shapes the Tavily query. Focus areas
+# are normalized as a sorted set so equivalent selections share an entry while
+# changing the selection triggers a fresh search. News moves slowly enough that
+# a short reuse window costs nothing in freshness and saves a whole credit on a
+# repeated or shared search.
+CacheKey = Tuple[str, str, Tuple[str, ...]]
+_articles_cache: Dict[CacheKey, Tuple[float, List[dict]]] = {}
 
 
 def clear_cache() -> None:
@@ -417,8 +419,15 @@ def clear_cache() -> None:
     _articles_cache.clear()
 
 
-def _cache_key(company: str, time_range: str) -> Tuple[str, str]:
-    return (" ".join(company.lower().split()), time_range)
+def _cache_key(
+    company: str,
+    time_range: str,
+    focus_areas: Optional[Sequence[str]] = None,
+) -> CacheKey:
+    normalized_focus = tuple(
+        sorted({area.strip().lower() for area in focus_areas or [] if area.strip()})
+    )
+    return (" ".join(company.lower().split()), time_range, normalized_focus)
 
 
 async def fetch_articles(
@@ -433,10 +442,15 @@ async def fetch_articles(
     if not settings.tavily_api_key:
         raise NewsConfigError()
 
-    key = _cache_key(company, time_range)
+    key = _cache_key(company, time_range, focus_areas)
     cached = _articles_cache.get(key)
     if cached is not None and time.monotonic() < cached[0]:
-        logger.info("Serving %s (%s) from cache; no credit spent", company, time_range)
+        logger.info(
+            "Serving %s (%s, focus=%s) from cache; no credit spent",
+            company,
+            time_range,
+            key[2] or "none",
+        )
         return list(cached[1])
 
     body = build_search_body(company, time_range, settings, focus_areas)
