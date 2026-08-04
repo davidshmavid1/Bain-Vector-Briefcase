@@ -536,6 +536,36 @@ async def test_a_different_window_is_fetched_separately(settings):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_different_focus_areas_are_fetched_separately(settings):
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
+
+    await news_service.collect_sources(
+        "Acme Corp", "month", focus_areas=["strategy"], settings=settings
+    )
+    await news_service.collect_sources(
+        "Acme Corp", "month", focus_areas=["finance"], settings=settings
+    )
+
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_equivalent_focus_areas_share_a_cache_entry(settings):
+    route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))
+
+    await news_service.collect_sources(
+        "Acme Corp", "month", focus_areas=["Strategy", "finance"], settings=settings
+    )
+    await news_service.collect_sources(
+        "Acme Corp", "month", focus_areas=[" finance ", "strategy", "strategy"], settings=settings
+    )
+
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_expired_cache_entry_is_refetched(settings):
     brief_cache = settings.model_copy(update={"tavily_cache_seconds": 0.0})
     route = respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=tavily_payload(6)))

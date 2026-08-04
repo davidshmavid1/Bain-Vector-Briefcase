@@ -182,8 +182,8 @@ whose body names a quota or credit problem (monthly allowance exhausted), and an
 
 Outbound calls are serialised behind a lock and spaced by `tavily_min_interval_seconds`, so
 concurrent searches queue rather than bursting past the per-minute ceiling. Raw results are cached
-for `tavily_cache_seconds` (10 min) keyed on company and window, so a repeat or shared search costs
-no credit at all.
+for `tavily_cache_seconds` (10 min) keyed on company, window and normalized focus-area selection, so
+an identical repeat or shared search costs no credit while a changed filter gets fresh results.
 
 Gemini throttles and overloads too: an overloaded model returns `503 UNAVAILABLE` and a quota bite
 returns `429`. Both clear on their own, so the analysis service retries once after 3s. A `400`,
