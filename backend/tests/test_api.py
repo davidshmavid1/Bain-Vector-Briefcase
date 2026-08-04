@@ -156,6 +156,24 @@ def test_no_articles_returns_friendly_404(client, settings):
 
 
 @respx.mock
+def test_person_query_returns_friendly_404(client, settings, monkeypatch, fake_gemini, analysis):
+    person = analysis.model_copy(
+        update={
+            "target_entity": analysis.target_entity.model_copy(
+                update={"entity_type": "person", "name": "Elon Musk"}
+            ),
+        }
+    )
+    respx.post(TAVILY_URL).mock(return_value=httpx.Response(200, json=news_payload()))
+    fake_gemini(monkeypatch, parsed=person)
+
+    response = client.post("/api/v1/brief", json={"company": "Elon Musk"})
+
+    assert response.status_code == 404
+    assert "person" in response.json()["detail"].lower()
+
+
+@respx.mock
 def test_too_few_articles_returns_friendly_404(client, settings):
     respx.post(TAVILY_URL).mock(
         return_value=httpx.Response(200, json=news_payload(count=2))

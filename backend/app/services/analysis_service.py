@@ -20,7 +20,7 @@ from ..schemas import (
     Insight,
     Source,
 )
-from .errors import AnalysisConfigError, AnalysisUnavailableError
+from .errors import AnalysisConfigError, AnalysisUnavailableError, PersonEntityError
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +48,12 @@ using ONLY the sources provided below as evidence. Do not rely on outside/prior 
 a company you have not seen support for in these sources.
 
 2. Populate target_entity:
-   - name: the specific company you resolved to (may be more specific than the raw query, e.g. \
-"Gerber Products Company" instead of "Gerber").
-   - entity_type: "company" if you can confidently name one company; "unknown" if the sources are \
-split across multiple unrelated entities and you cannot pick one in good faith.
+   - name: the specific entity you resolved to — a company name (may be more specific than the raw \
+query, e.g. "Gerber Products Company" instead of "Gerber"), or a person's name if entity_type is \
+"person".
+   - entity_type: "company" if you can confidently name one company; "person" if the sources \
+overwhelmingly resolve to one specific individual human being rather than a company; "unknown" if \
+the sources are split across multiple unrelated entities and you cannot pick one in good faith.
    - parent_company / industry: fill in if stated in the sources, else "" (empty string — never \
 "unknown" or "N/A").
    - entity_confidence: your honest belief that you resolved to the ONE company the user meant. \
@@ -210,8 +212,11 @@ def sanitize_analysis(analysis: BriefAnalysis, sources: Sequence[Source]) -> Bri
     # Intentional: ANY entity_confidence value caps the ceiling, not just low/ambiguous —
     # an honestly-"medium" entity match withholds "high" even with broad, clean evidence.
     ceiling = _CONFIDENCE_RANK[entity.entity_confidence]
-    if entity.entity_type == "unknown":
-        # Cannot be reliably determined at all — always low.
+    if entity.entity_type in ("unknown", "person"):
+        # Cannot be reliably determined at all (unknown), or isn't a company in
+        # the first place (person) — always low either way. analyze() below
+        # short-circuits the "person" case before this brief is ever returned;
+        # this just keeps sanitize_analysis correct on its own terms too.
         ceiling = _CONFIDENCE_RANK["low"]
     elif entity.ambiguity_detected:
         # "Some ambiguity remains" (medium) vs. "substantial mixture, few sources
@@ -250,6 +255,25 @@ def sanitize_analysis(analysis: BriefAnalysis, sources: Sequence[Source]) -> Bri
             "confidence": confidence,
         }
     )
+
+
+def _is_person_entity(analysis: BriefAnalysis, sources: Sequence[Source]) -> bool:
+    """True if the query resolved to a person rather than a company.
+
+    Corroborates target_entity.entity_type against source_entity_matches, the
+    same way sanitize_analysis() above refuses to trust the model's self-rating
+    alone: a model hedging to "unknown" out of caution still counts if the
+    sources are in fact dominated by person-classified coverage with nothing
+    usable left over.
+    """
+    if analysis.target_entity.entity_type == "person":
+        return True
+    if not sources:
+        return False
+    matches = analysis.source_entity_matches
+    usable = sum(1 for m in matches if m.classification in _USABLE_ENTITY_CLASSES)
+    person = sum(1 for m in matches if m.classification == "person")
+    return usable == 0 and person / len(sources) >= 0.5
 
 
 def to_developments(items: Sequence[AnalysisDevelopment]) -> List[Development]:
@@ -344,4 +368,7 @@ async def analyze(
                 "The analysis service returned an unexpected response. Please try again."
             ) from exc
 
-    return sanitize_analysis(analysis, sources)
+    cleaned = sanitize_analysis(analysis, sources)
+    if _is_person_entity(analysis, sources):
+        raise PersonEntityError()
+    return cleaned

@@ -42,6 +42,14 @@ class NoArticlesFoundError(BriefError):
     )
 
 
+class PersonEntityError(BriefError):
+    status_code = 404
+    message = (
+        "That looks like a person's name, not a company. "
+        "Please enter a company name instead."
+    )
+
+
 class AnalysisUnavailableError(BriefError):
     status_code = 503
     message = "The analysis service is temporarily unavailable. Please try again in a moment."
