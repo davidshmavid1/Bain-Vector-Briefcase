@@ -39,3 +39,4 @@ coverage/
 Thumbs.db
 *.pem
 CLAUDE.md
+.zed/debug.json
