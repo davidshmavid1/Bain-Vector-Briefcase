@@ -3,6 +3,7 @@
 import * as React from "react";
 import {
   AlertTriangle,
+  ChevronDown,
   ExternalLink,
   FlaskConical,
   Lightbulb,
@@ -47,8 +48,8 @@ export function BriefReport({ brief, onNewSearch }: BriefReportProps) {
   const showEvidence = brief.confidence !== "low";
 
   return (
-    <article className="space-y-8">
-      <header className="space-y-5 border-b border-border pb-6">
+    <article className="space-y-10">
+      <header className="relative space-y-6 border border-border border-t-4 border-t-primary bg-card p-6 shadow-[0_12px_40px_color-mix(in_oklch,var(--foreground)_7%,transparent)] sm:p-8">
         {brief.is_demo && (
           <p className="rounded-md border border-caution/40 bg-muted px-4 py-2.5 text-sm text-caution">
             <FlaskConical aria-hidden="true" className="mr-2 inline h-4 w-4" />
@@ -58,10 +59,8 @@ export function BriefReport({ brief, onNewSearch }: BriefReportProps) {
 
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-              Client preparation brief
-            </p>
-            <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">{brief.company}</h2>
+            <p className="eyebrow text-primary">Client preparation brief</p>
+            <h2 className="text-4xl font-semibold tracking-[-0.045em] sm:text-5xl">{brief.company}</h2>
             <p className="text-sm text-muted-foreground">
               Generated {formatTimestamp(brief.generated_at)} · Last {brief.time_range} ·{" "}
               {brief.sources.length} {brief.sources.length === 1 ? "source" : "sources"}
@@ -75,13 +74,15 @@ export function BriefReport({ brief, onNewSearch }: BriefReportProps) {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-5">
           <CopyBriefButton brief={brief} />
         </div>
       </header>
 
       <Section title="Executive summary">
-        <p className="text-lg leading-relaxed text-foreground">{brief.executive_summary}</p>
+        <p className="border-l-4 border-primary bg-card py-4 pl-6 pr-5 text-lg font-medium leading-8 text-foreground sm:text-xl">
+          {brief.executive_summary}
+        </p>
         <p className="mt-3 text-sm text-muted-foreground">{confidenceHint(brief.confidence)}</p>
         {refinementSuggestion(brief.confidence) && (
           <p className="mt-3 flex items-start gap-2 rounded-md border border-border bg-soft px-3 py-2 text-sm text-primary">
@@ -109,7 +110,7 @@ export function BriefReport({ brief, onNewSearch }: BriefReportProps) {
                       </CardHeader>
                       <CardContent className="space-y-3">
                         <p className="text-sm leading-relaxed text-foreground">{development.summary}</p>
-                        <p className="border-l-2 border-primary/40 pl-3 text-sm leading-relaxed text-muted-foreground">
+                        <p className="border-l-2 border-primary bg-soft/70 py-2 pl-4 pr-3 text-sm leading-relaxed text-muted-foreground">
                           <span className="font-medium text-foreground">Why it matters: </span>
                           {development.why_it_matters}
                         </p>
@@ -213,10 +214,13 @@ function Section({
 }) {
   return (
     <section className="space-y-4">
-      <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {icon}
-        {title}
-      </h3>
+      <div className="flex items-center gap-4">
+        <span aria-hidden="true" className="h-0.5 w-8 bg-primary" />
+        <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.16em] text-foreground">
+          {icon}
+          {title}
+        </h3>
+      </div>
       {children}
     </section>
   );
@@ -281,7 +285,7 @@ function SourceRefs({
         <a
           key={position}
           href={`#source-${position}`}
-          className="rounded border border-border px-1.5 py-0.5 font-mono text-[0.6875rem] transition-colors hover:border-primary hover:text-primary"
+          className="rounded-sm border border-primary/30 bg-soft px-1.5 py-0.5 font-mono text-[0.6875rem] font-semibold text-primary transition-colors hover:border-primary"
         >
           {position}
         </a>
@@ -292,9 +296,9 @@ function SourceRefs({
 
 function SourceCard({ source, position }: { source: Source; position: number }) {
   return (
-    <Card id={`source-${position}`} className="scroll-mt-24 transition-colors hover:border-input">
+    <Card id={`source-${position}`} className="scroll-mt-24 border-l-2 transition-colors hover:border-l-primary">
       <CardContent className="flex gap-4 p-5">
-        <span className="mt-0.5 w-6 shrink-0 font-mono text-xs text-muted-foreground">
+        <span className="mt-0.5 w-6 shrink-0 font-mono text-xs font-bold text-primary">
           {String(position).padStart(2, "0")}
         </span>
         <div className="min-w-0 flex-1 space-y-2">
@@ -316,7 +320,18 @@ function SourceCard({ source, position }: { source: Source; position: number }) 
             <span className="text-xs text-muted-foreground">{formatDate(source.published_at)}</span>
           </div>
           {source.snippet && (
-            <p className="text-sm leading-relaxed text-muted-foreground">{source.snippet}</p>
+            <details className="group pt-1">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-semibold text-primary marker:content-none hover:text-foreground">
+                <span>Show article excerpt</span>
+                <ChevronDown
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 transition-transform group-open:rotate-180"
+                />
+              </summary>
+              <p className="mt-3 border-l-2 border-border pl-4 text-sm leading-relaxed text-muted-foreground">
+                {source.snippet}
+              </p>
+            </details>
           )}
         </div>
       </CardContent>

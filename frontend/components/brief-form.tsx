@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRight, Clock, Loader2, Search } from "lucide-react";
+import { ArrowRight, Check, Clock, Loader2, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,16 +67,16 @@ export function BriefForm({
 
   return (
     <form onSubmit={handleSubmit} noValidate>
-      <fieldset disabled={isSubmitting} className="space-y-6 disabled:opacity-70">
+      <fieldset disabled={isSubmitting} className="space-y-8 disabled:opacity-70">
         <legend className="sr-only">Generate a company brief</legend>
 
-        <div className="space-y-2">
-          <Label htmlFor="company">Company</Label>
+        <div className="space-y-3">
+          <Label htmlFor="company">Company or organization</Label>
           <div className="flex flex-col gap-3 sm:flex-row">
             <div className="relative flex-1">
               <Search
                 aria-hidden="true"
-                className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-primary"
               />
               <Input
                 id="company"
@@ -87,7 +87,7 @@ export function BriefForm({
                 placeholder="Enter a company name, e.g. Microsoft"
                 autoComplete="organization"
                 maxLength={120}
-                className="pl-11"
+                className="h-14 pl-12 text-lg"
                 aria-invalid={showError}
                 aria-describedby={showError ? "company-error" : "company-hint"}
               />
@@ -95,7 +95,7 @@ export function BriefForm({
             <Button
               type="submit"
               size="lg"
-              className={cn("sm:w-auto", variant === "hero" && "sm:px-8")}
+              className={cn("h-14 sm:w-auto", variant === "hero" && "sm:px-9")}
             >
               {isSubmitting ? (
                 <>
@@ -121,13 +121,13 @@ export function BriefForm({
           )}
         </div>
 
-        <div className="grid gap-6 sm:grid-cols-[auto_1fr]">
+        <div className="grid gap-7 lg:grid-cols-[auto_1fr] lg:gap-12">
           <div className="space-y-2">
             <Label id="timeframe-label">Timeframe</Label>
             <div
               role="radiogroup"
               aria-labelledby="timeframe-label"
-              className="inline-flex rounded-md border border-input bg-card p-1"
+              className="inline-flex rounded-sm border border-input bg-muted/50 p-1"
             >
               {TIME_RANGE_OPTIONS.map((option) => {
                 const selected = option.value === timeRange;
@@ -139,7 +139,7 @@ export function BriefForm({
                     aria-checked={selected}
                     onClick={() => setTimeRange(option.value)}
                     className={cn(
-                      "rounded-sm px-4 py-1.5 text-sm font-medium transition-colors",
+                      "rounded-sm px-4 py-1.5 text-sm font-semibold transition-all",
                       selected
                         ? "bg-primary text-primary-foreground"
                         : "text-muted-foreground hover:text-foreground",
@@ -163,16 +163,17 @@ export function BriefForm({
                   <button
                     key={area.value}
                     type="button"
-                    role="checkbox"
-                    aria-checked={selected}
+                    aria-pressed={selected}
+                    data-state={selected ? "on" : "off"}
                     onClick={() => toggleFocus(area.value)}
                     className={cn(
-                      "rounded-full border px-3 py-1.5 text-sm transition-colors",
+                      "inline-flex cursor-pointer items-center gap-1.5 rounded-sm border px-3 py-1.5 text-sm transition-all active:scale-[0.98]",
                       selected
-                        ? "border-primary bg-soft font-medium text-primary"
-                        : "border-input bg-card text-muted-foreground hover:text-foreground",
+                        ? "border-primary bg-primary font-semibold text-primary-foreground ring-2 ring-primary/20 ring-offset-1 ring-offset-card"
+                        : "border-input bg-card text-muted-foreground hover:border-primary hover:bg-soft hover:text-primary",
                     )}
                   >
+                    {selected && <Check aria-hidden="true" className="h-3.5 w-3.5" />}
                     {area.label}
                   </button>
                 );
@@ -182,7 +183,7 @@ export function BriefForm({
         </div>
 
         {variant === "hero" && (
-          <div className="space-y-3 border-t border-border pt-6">
+          <div className="space-y-3 border-t border-border pt-7">
             <SuggestionRow
               label="Try an example"
               names={EXAMPLE_COMPANIES}
@@ -225,7 +226,7 @@ function SuggestionRow({
           key={name}
           type="button"
           onClick={() => onPick(name)}
-          className="rounded-full border border-border px-3 py-1 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+          className="border-b border-transparent px-1 py-0.5 text-sm font-medium text-muted-foreground transition-colors hover:border-primary hover:text-primary"
         >
           {name}
         </button>

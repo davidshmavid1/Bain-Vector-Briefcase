@@ -94,63 +94,110 @@ export default function HomePage() {
   const hasResultsArea = isLoading || error !== null || brief !== null;
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-5 py-12 sm:px-8 sm:py-16">
-      <header className="space-y-5">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-          Bain Vector Briefcase
-        </p>
-        <h1 className="text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl">
-          Walk into every client meeting already briefed.
-        </h1>
-        <p className="max-w-2xl text-lg leading-relaxed text-muted-foreground">
-          Enter a company and get a partner-ready brief built from recent news coverage — what
-          happened, why it matters, the risks and opportunities it opens, and the questions worth
-          asking. Every finding is tied back to the sources it came from.
-        </p>
+    <div className="min-h-screen">
+      <header className="border-t-4 border-t-primary border-b border-b-border bg-background">
+        <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
+          <div className="flex items-baseline gap-3">
+            <p className="text-lg font-semibold tracking-[-0.04em]">Bain Vector</p>
+            <span aria-hidden="true" className="h-4 w-px bg-border" />
+            <p className="eyebrow text-muted-foreground">Briefcase</p>
+          </div>
+          <p className="hidden text-xs font-medium text-muted-foreground sm:block">Client preparation intelligence</p>
+        </div>
       </header>
 
-      <section className="mt-10 rounded-lg border border-border bg-card p-6 sm:p-8">
-        <BriefForm isSubmitting={isLoading} recentSearches={recentSearches} onSubmit={handleSubmit} />
-      </section>
-
-      <div ref={resultsRef} className="scroll-mt-8">
-        {hasResultsArea && (
-          <div className="mt-12 space-y-8">
-            {error !== null && (
-              <ErrorNotice
-                message={error}
-                onRetry={handleRetry}
-                isRetrying={isLoading}
-                keepsPreviousReport={brief !== null}
-              />
-            )}
-
-            {isLoading && pending ? (
-              <BriefLoading company={pending.company} />
-            ) : (
-              brief !== null && <BriefReport brief={brief} onNewSearch={handleNewSearch} />
-            )}
+      <div className="mx-auto w-full max-w-7xl px-5 sm:px-8">
+        <section className="grid gap-12 py-16 sm:py-24 lg:grid-cols-[minmax(0,1fr)_15rem] lg:items-end lg:gap-20">
+          <div>
+            <p className="eyebrow mb-7 flex items-center gap-3 text-primary">
+              <span aria-hidden="true" className="h-px w-8 bg-primary" />
+              Partner-ready preparation
+            </p>
+            <h1 className="max-w-4xl text-5xl font-semibold leading-[1.01] tracking-[-0.055em] sm:text-6xl lg:text-7xl">
+              Get to the point
+              <span className="block">before the meeting does.</span>
+            </h1>
+            <p className="mt-8 max-w-2xl text-lg leading-8 text-muted-foreground sm:text-xl">
+              A clear, sourced view of the company, the forces shaping it, and the questions worth
+              bringing into the room.
+            </p>
           </div>
-        )}
-      </div>
 
-      {!hasResultsArea && (
-        <section className="mt-12 grid gap-6 sm:grid-cols-3">
-          {HIGHLIGHTS.map((item) => (
-            <div key={item.title} className="space-y-2">
-              <h2 className="text-sm font-semibold text-foreground">{item.title}</h2>
-              <p className="text-sm leading-relaxed text-muted-foreground">{item.body}</p>
-            </div>
-          ))}
+          <aside className="border-t border-foreground pt-5" aria-label="Brief qualities">
+            <p className="eyebrow text-foreground">The brief</p>
+            <dl className="mt-5 space-y-4 text-sm">
+              <div className="flex items-baseline justify-between gap-4">
+                <dt className="text-muted-foreground">Coverage</dt>
+                <dd className="font-semibold">Current</dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-4">
+                <dt className="text-muted-foreground">Analysis</dt>
+                <dd className="font-semibold">Evidence-led</dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-4">
+                <dt className="text-muted-foreground">Format</dt>
+                <dd className="font-semibold">Meeting-ready</dd>
+              </div>
+            </dl>
+          </aside>
         </section>
-      )}
 
-      <footer className="mt-16 border-t border-border pt-6">
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          Briefs are generated from public news metadata and are a starting point for preparation,
-          not a substitute for diligence. Nothing here is investment advice.
-        </p>
-      </footer>
+        <section className="border-y border-foreground bg-card py-8 sm:py-10">
+          <div className="grid gap-8 px-6 sm:px-10 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-12">
+            <div>
+              <p className="eyebrow text-primary">Create a brief</p>
+              <h2 className="mt-3 text-2xl font-semibold leading-tight tracking-[-0.035em]">
+                Start with the company.
+              </h2>
+              <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                We will handle the recent news, synthesis, and source trail.
+              </p>
+            </div>
+            <BriefForm isSubmitting={isLoading} recentSearches={recentSearches} onSubmit={handleSubmit} />
+          </div>
+        </section>
+
+        <div ref={resultsRef} className="scroll-mt-8">
+          {hasResultsArea && (
+            <div className="mx-auto mt-20 max-w-5xl space-y-8">
+              {error !== null && (
+                <ErrorNotice
+                  message={error}
+                  onRetry={handleRetry}
+                  isRetrying={isLoading}
+                  keepsPreviousReport={brief !== null}
+                />
+              )}
+
+              {isLoading && pending ? (
+                <BriefLoading company={pending.company} />
+              ) : (
+                brief !== null && <BriefReport brief={brief} onNewSearch={handleNewSearch} />
+              )}
+            </div>
+          )}
+        </div>
+
+        {!hasResultsArea && (
+          <section className="grid border-b border-border py-12 sm:grid-cols-3 sm:divide-x sm:divide-border sm:py-16" aria-label="Why use Vector Briefcase">
+            {HIGHLIGHTS.map((item, index) => (
+              <div key={item.title} className="py-7 sm:px-8 sm:py-0 first:sm:pl-0 last:sm:pr-0">
+                <span className="font-mono text-xs font-semibold text-primary">0{index + 1}</span>
+                <h2 className="mt-5 text-lg font-semibold tracking-tight text-foreground">{item.title}</h2>
+                <p className="mt-3 text-sm leading-6 text-muted-foreground">{item.body}</p>
+              </div>
+            ))}
+          </section>
+        )}
+
+        <footer className="flex flex-col gap-4 py-8 sm:flex-row sm:items-start sm:justify-between">
+          <p className="text-sm font-semibold tracking-[-0.02em]">Bain Vector Briefcase</p>
+          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground sm:text-right">
+            Briefs are generated from public news metadata and are a starting point for preparation,
+            not a substitute for diligence. Nothing here is investment advice.
+          </p>
+        </footer>
+      </div>
     </div>
   );
 }
